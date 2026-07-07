@@ -1,0 +1,9 @@
+[submodule "supagloo-nextjs"]
+	path = supagloo-nextjs
+	url = https://github.com/ashtable/supagloo-nextjs
+[submodule "supagloo-nodejs-api"]
+	path = supagloo-nodejs-api
+	url = https://github.com/ashtable/supagloo-nodejs-api
+[submodule "supagloo-nodejs-dbos"]
+	path = supagloo-nodejs-dbos
+	url = https://github.com/ashtable/supagloo-nodejs-dbos
