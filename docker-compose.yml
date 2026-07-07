@@ -1,0 +1,7 @@
+services:
+  nextjs:
+    build:
+      context: ./supagloo-nextjs
+      dockerfile: Dockerfile
+    ports:
+      - "8000:3000"
