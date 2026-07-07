@@ -45,7 +45,15 @@ git submodule update --init --recursive
 
 ### Running the platform locally
 
-A Docker Compose file (referencing the submodules) is intended to bring up the entire platform locally. _(Coming soon.)_
+A Docker Compose file brings up the platform locally:
+
+```bash
+docker compose up --build
+```
+
+Then open [http://localhost:8000](http://localhost:8000).
+
+Currently this builds and runs the `supagloo-nextjs` submodule. Services for `supagloo-nodejs-api` and `supagloo-nodejs-dbos` are not yet wired into Compose.
 
 ### Keeping submodules up to date
 
