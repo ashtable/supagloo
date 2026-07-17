@@ -786,7 +786,7 @@ sequenceDiagram
         U->>A: GET /v1/projects/:id/jobs/:jobId → stages
     end
     W->>GH: mint installation token (App JWT → 1h scoped token)
-    W->>GH: create repo → clone → scaffold Remotion + supagloo.project.json
+    W->>GH: ensureRepoAccessible (repo already created pre-enqueue above) → clone → scaffold Remotion + supagloo.project.json
     W->>GH: commit v0.0.0 → push → PR → merge main → cut v0.0.1
     W->>DB: update stages per step, finalize Project + ProjectVersions
     U->>U: redirect to /studio/[slug]

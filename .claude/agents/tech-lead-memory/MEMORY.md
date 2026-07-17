@@ -21,3 +21,4 @@ individual files, never here.
 - [OpenRouter media + AI SDK split](openrouter-media-and-ai-sdk-split.md) — OpenRouter covers video/TTS/music; generateObject for text, plain fetch for media; never hardcode model ids
 - [KJV/BSB generation only](kjv-bsb-generation-only.md) — generation pipeline restricted to public-domain translations; version ids resolved at implementation time
 - [Prisma exact version pin](prisma-exact-version-pin.md) — consumers must pin database-lib's exact Prisma version, CI-enforced
+- [E2E test-infra conventions](e2e-test-infra-conventions.md) — provider stubs + local git server, early /v1/test/seed, Stagehand real-stack mode, DBOS crash/replay tests standard
