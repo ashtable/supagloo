@@ -34,6 +34,14 @@ screen (14b, not designed yet), the `recode.md`/`redesign.md` prompt files,
 and any change to YouVersion sign-in itself (already real; we only add a
 server-side session on top of it).
 
+**Descoped for v1 — VOTD / passage / demo creation origins.** Of the five
+`createdFrom` origins (Turn 9), v1 ships only **`blank`** and **`import`**.
+`votd`, `passage`, and `demo` remain **reserved enum values** (so no
+data-model churn when they land), but their project-creation entry points
+render as **disabled "coming soon"** cards — the actual creation flows
+(VOTD/passage passage-fetch + storyboard generation, demo seeding) are not
+built in v1.
+
 ---
 
 ## 2. Data model (`supagloo-database-lib`)
@@ -73,6 +81,25 @@ tables in Postgres.** Instead:
 Postgres therefore stores: identity/session, connections, project *metadata
 and pointers*, version-branch records, job records (scaffold/import/commit/
 publish/render/AI-generation), and gallery entries.
+
+### v1 stated limitations (manifest ⇄ generated code ⇄ preview)
+
+Two consequences of the manifest-as-source-of-truth model are **accepted
+limitations for v1**, called out here so they are not mistaken for bugs:
+
+1. **Hand-edits to generated scene sources are NOT preserved.**
+   `applyManifest` (§7, workflow 3) **overwrites** the generated scene source
+   files on every commit — the `supagloo.project.json` manifest is the *sole*
+   source of truth in v1. A user who hand-edits `src/scenes/*.tsx` directly in
+   their repo will see those edits regenerated away on the next studio commit.
+   Round-tripping arbitrary hand-written Remotion code back into the manifest
+   is explicitly out of scope for v1.
+2. **Studio preview and the DBOS renderer are separate code paths, NOT
+   guaranteed to produce identical output.** The studio preview uses
+   `@remotion/player` (browser, live manifest state); the render pipeline uses
+   `@remotion/renderer` (DBOS worker, committed branch). They are wired
+   independently in v1 and may diverge (fonts, asset timing, codec-specific
+   rendering). Unifying them behind one shared composition path is **v2 work**.
 
 ### 2.1 `User` — identity + first-time sign-in tracking
 
@@ -126,6 +153,24 @@ services — one pair per app registration, not per-user data — so they live
 in env config, never in the database, and are outside §2.10's per-user
 encryption scheme.
 
+**Create-new-repo caveat (zero-storage user-token hop).** Installation tokens
+have a hard limitation: they **cannot create repositories in a personal
+account**, and a repo created out-of-band is **not automatically added to a
+`selected` installation**. So the *create-new-repo* origin needs a
+user-authorized action that installation tokens can't provide. Rather than
+store a user OAuth/refresh token, create-new-repo does a **JIT (just-in-time)
+zero-storage user-token hop** at project-creation time: a GitHub
+user-authorization redirect → server-side code exchange → a **short-lived
+user access token** → used **exactly once** for `POST /user/repos` (and, when
+the installation is `selected`, `PUT /user/installations/{id}/repositories/{repoId}`
+to add the new repo to the installation) → then **discarded**. **No user or
+refresh token is ever stored** — this preserves the "no repo credential at
+rest" property of the installation-token model. The *use-existing-empty-repo*
+and *import* origins need **no** hop (the repo is already reachable by the
+installation token). The alternative — storing an encrypted GitHub user
+refresh token to re-mint user tokens — was **explicitly rejected** (it
+reintroduces a per-user credential at rest for a one-time operation).
+
 ### 2.4 `OpenRouterConnection` (1:0..1 with User)
 
 | Field | Notes |
@@ -156,11 +201,11 @@ merges the three.)*
 
 | Field | Notes |
 |---|---|
-| `id`, `slug` | slug drives `/studio/[slug]` (`psalm-121`) |
+| `id`, `slug` | slug drives `/studio/[slug]` (`psalm-121`). **Unique per `(ownerId, slug)`, NOT globally unique** — two different owners may both hold `psalm-121`. `/studio/[slug]` and `GET /v1/projects/:id` resolve **scoped to the authed owner** |
 | `ownerId` | FK → User |
 | `name` | editable in studio top bar |
 | `repoOwner`, `repoName`, `repoVisibility` (`private\|public`) | 12a |
-| `createdFrom` | enum `votd \| passage \| blank \| demo \| import` (Turn 9) |
+| `createdFrom` | enum `votd \| passage \| blank \| demo \| import` (Turn 9). **v1 ships `blank` + `import` only**; `votd`/`passage`/`demo` are **reserved enum values** with **disabled "coming soon"** entry points (§1) |
 | `currentBranch` | the working `vX.Y.Z` branch |
 | `thumbnailAssetKey` | S3 key from last render (or generated placeholder) |
 | `lastRenderJobId` | nullable — drives the `RENDERED`/`DRAFT` badge on 10a cards |
@@ -242,7 +287,7 @@ work, not blockers for this delta: the gallery item detail/watch page, the
 | `id` | PK — also the DBOS workflow ID |
 | `userId`, `projectId` (nullable), `sceneId` (nullable string — the manifest scene id) | |
 | `kind` | enum `storyboard \| script \| image \| narration \| music \| video` |
-| `provider` | enum `gloo \| openrouter` (user-selected per request) |
+| `provider` | enum `gloo \| openrouter` (user-selected per request), **constrained per `kind` by a compatibility matrix**: `storyboard`/`script` accept `gloo` **or** `openrouter`; `image`/`narration`/`music`/`video` accept `openrouter` **ONLY** (Gloo has no media modalities — §9-Q2). Enforced **at enqueue**, encoded once as a shared `database-lib` constant (see §7 "Provider call patterns" and §8) |
 | `model` | provider model id |
 | `input` | JSON — the prompt/spec, Zod-validated at enqueue |
 | `status` | enum `queued \| running \| succeeded \| failed \| canceled` |
@@ -264,6 +309,15 @@ since they share the shape "async job with an ordered stage checklist".
 | `status` | enum `queued \| running \| succeeded \| failed \| canceled` |
 | `stages` | JSON array of `{ key, label, state: pending\|running\|done\|failed }` — the UI log rows |
 | `error`, `createdAt`, `completedAt` | |
+
+**Per-project git-ops serialization (409 guard).** The API **rejects with 409**
+a new git-ops job (scaffold/import/commit/publish) for a project that already
+has a `queued` or `running` ProjectJob — this **serializes git-ops per
+project** so two commits/publishes can't race on the same repo's branches.
+`baseHeadSha`-style optimistic concurrency (rejecting a commit whose base no
+longer matches the branch head) is **explicitly deferred**: exposure is low
+(a single user rarely drives concurrent git-ops on one project) and any bad
+outcome is git-recoverable.
 
 ### 2.10 Secrets encryption
 
@@ -355,7 +409,7 @@ erDiagram
     }
     PROJECT {
         string id PK
-        string slug UK
+        string slug "unique per owner (ownerId, slug)"
         string ownerId FK
         string name
         string repoOwner
@@ -545,8 +599,12 @@ images against Railway Postgres + the existing bucket.
 - **`supagloo-nextjs`** — UI + thin BFF. Gets its first-ever
   `app/api/**/route.ts` handlers, which (a) hold the httpOnly session cookie
   and forward requests to the API with the bearer token, and (b) host the
-  GitHub/OpenRouter OAuth **callback routes** (staying on the user-facing
-  origin). No business logic; no direct DB/S3 access.
+  **GitHub callback route(s)** — the **App installation callback** *and* (per
+  §6b) the **JIT user-authorization callback used only for create-new-repo**
+  (§2.3) — staying on the user-facing origin. **OpenRouter's PKCE exchange is
+  entirely browser-side** (per 11c / §6a / §9-Q5): the browser completes the
+  exchange and POSTs the resulting key to the BFF, so there is **no OpenRouter
+  server-side callback route**. No business logic; no direct DB/S3 access.
 - **`supagloo-nodejs-api`** — Fastify + Prisma (`database-lib`) + AWS SDK S3
   client + **`DBOSClient`** (enqueue-only; it does *not* run the DBOS
   runtime). Owns auth/session, all CRUD, OAuth exchanges + the GitHub App
@@ -713,6 +771,13 @@ sequenceDiagram
     participant LLM as Gloo / OpenRouter
     participant S3 as S3
 
+    Note over U,GH: create-new-repo path ONLY — use-existing / import skip this
+    U->>GH: GitHub user-authorization redirect (create-new-repo)
+    GH-->>A: callback with code (via BFF)
+    A->>GH: exchange code → short-lived USER token
+    A->>GH: POST /user/repos (+ PUT .../installations/:id/repositories/:repoId if selected)
+    Note over A: USER token used once, then discarded — nothing stored
+
     U->>A: POST /v1/projects { name, repo, visibility, createdFrom }
     A->>DB: create Project + ProjectJob(kind=scaffold)
     A->>A: DBOSClient.enqueue(scaffoldProjectWorkflow, workflowID=jobId, queue=git-ops)
@@ -759,14 +824,15 @@ sequenceDiagram
     A->>A: DBOSClient.enqueue(renderWorkflow, workflowID=renderJobId, queue=render)
     A-->>U: { renderJobId }
 
-    W->>DB: status → bundling
     W->>GH: mint installation token (App JWT → 1h scoped token)
     W->>GH: clone repo at version branch (ephemeral workspace)
     W->>S3: fetch scene assets referenced by manifest
-    W->>W: @remotion/bundler bundle
-    W->>DB: status → synthesizing (narration + music if missing)
+    W->>DB: status → synthesizing (before bundle)
+    W->>W: synthesize narration + music into workspace (if missing)
+    W->>DB: status → bundling
+    W->>W: npm ci --ignore-scripts + @remotion/bundler bundle (scrubbed-env child)
     W->>DB: status → encoding
-    W->>W: @remotion/renderer renderMedia — onProgress writes framesDone
+    W->>W: @remotion/renderer renderMedia (scrubbed-env child) — onProgress writes framesDone
     W->>DB: status → uploading
     W->>S3: upload renders/{jobId}/output.mp4 + thumb.jpg
     W->>DB: status → completed, outputAssetKey
@@ -866,6 +932,12 @@ the API.
   OpenRouter's discovery endpoints (`GET /api/v1/models?output_modalities=…`,
   `GET /api/v1/videos/models`). Any model id appearing in this document is
   illustrative only.
+- **Kind→provider compatibility matrix.** `storyboard`/`script` →
+  `gloo` **or** `openrouter` (structured text via AI SDK `generateObject`);
+  `image`/`narration`/`music`/`video` → **`openrouter` ONLY** (Gloo has no
+  media modalities). Defined **once** as a shared `database-lib` constant and
+  enforced (**422**) at `POST /v1/ai/generations` **before** any row or
+  workflow is created (§2.8, §8).
 
 ### Workflow inventory
 
@@ -883,11 +955,24 @@ steps. Minted fresh per run, never persisted (§2.3).
 
 1. **`scaffoldProjectWorkflow(projectJobId)`** — queue `git-ops`. Steps:
    `mintInstallationToken` (see above) →
-   `createGithubRepo` (idempotent: check-by-name first) → `cloneToWorkspace`
+   `ensureRepoAccessible` (idempotent confirmation that the installation token
+   can reach the already-created repo — replaces the earlier `createGithubRepo`
+   step) → `cloneToWorkspace`
    → `writeRemotionScaffold` (template + `supagloo.project.json`) →
    `commitBaseVersion` (v0.0.0) → `pushOpenMergeBasePr` →
    `cutWorkingBranch` (v0.0.1, push) → `finalizeRecords` (Project,
    ProjectVersions, job stages). Stages mirror the 12a log row-for-row.
+
+   **Note — repo creation happens *before* this workflow, not inside it.** The
+   *create-new-repo* origin cannot be done with an installation token (§2.3),
+   so it is performed at the **API/BFF layer via the JIT zero-storage
+   user-token hop** (§6b/§2.3) **before** the workflow is enqueued; by the time
+   `scaffoldProjectWorkflow` runs, the repo exists and the installation token
+   can reach it. The *use-existing-empty-repo* and *import* origins skip the
+   hop entirely. **Implementation-time verification** (mirroring §9-Q7b's
+   pattern): confirm the exact GitHub App **user** permission required for
+   `POST /user/repos`; **named fallback if infeasible** — offer
+   use-existing-empty-repo / import only (drop create-new-repo).
 2. **`importProjectWorkflow(projectJobId)`** — queue `git-ops`. Steps:
    `cloneRepo` → `verifySupaglooProject` (requires `remotion.config.ts` +
    ≥1 `vN.N.N` branch; failure is typed + non-retryable → 12b's "NOT A
@@ -900,7 +985,10 @@ steps. Minted fresh per run, never persisted (§2.3).
 4. **`publishVersionWorkflow(projectJobId, commitMessage)`** — queue
    `git-ops`. Steps: `commitPendingChanges` → `pushBranch` →
    `openPullRequest` → `mergePullRequestAndTag` → `cutNextVersionBranch`
-   (pull main, branch `v0.0.(n+1)`, push) → `finalizeRecords`. Stages mirror
+   (pull main, then **bump the patch component of the highest existing
+   version** — e.g. highest `v0.2.3` → `v0.2.4`; highest `v0.0.1` → `v0.0.2`
+   — **not** a hardcoded `v0.0.(n+1)`, which breaks for imported projects
+   carrying free-form semver; push) → `finalizeRecords`. Stages mirror
    the 14a publishing log exactly.
 5. **`generateScriptWorkflow(generationId)`** — queue `ai-generation`.
    Steps: `loadRequestAndCredentials` (decrypt; Gloo path mints a
@@ -915,6 +1003,14 @@ steps. Minted fresh per run, never persisted (§2.3).
    same registered step, not a dynamic workflow) → `persistResult`.
    Handles both `storyboard` (full scene breakdown) and `script`
    (single-scene text) kinds via the schema selected by the request row.
+
+   **Implementation-time verification** (mirroring §9-Q7b): confirm that
+   YouVersion's Data Exchange API actually serves **KJV/BSB verse text
+   server-side** — availability, server-to-server auth, and presence of these
+   translations in the collection response. **Named fallback:** a bundled
+   **public-domain KJV/BSB dataset** or a public-domain Bible-text API. Both
+   translations are public domain, so the fallback **does not change the
+   pipeline's licensing posture** (§9-Q10).
 6. **`generateImageWorkflow(generationId)`** — queue `ai-generation`.
    Steps: `loadRequestAndCredentials` → `callImageModel` (retries as above)
    → `fetchAssetBytes` → `uploadAssetToS3` → `persistResult`.
@@ -954,21 +1050,39 @@ steps. Minted fresh per run, never persisted (§2.3).
    callback endpoint required). Video model discovery:
    `GET /api/v1/videos/models` (or `/api/v1/models?output_modalities=video`).
 9. **`renderWorkflow(renderJobId)`** — queue `render`. Steps:
-   `markStarted` → `cloneAtVersion` → `installDependencies` (`npm ci`,
-   retryable) → `downloadSceneAssets` (S3 → workspace) →
-   `bundleComposition` (`@remotion/bundler`) → `ensureNarrationAudio` /
-   `ensureMusicAudio` (synthesize only if the manifest lacks cached asset
-   refs) → `renderMedia` (one long step; `@remotion/renderer`'s
-   `onProgress` writes monotonic `framesDone` to the RenderJob row — safe
-   on replay) → `generateThumbnail` → `uploadOutputs` (mp4 + thumb to S3)
-   → `markCompleted`. Cancel = API calls DBOS cancel for
+   `markStarted` → `loadCredentials` (**NEW step** — decrypt the provider
+   credentials needed for audio synthesis) → `cloneAtVersion` →
+   `installDependencies` (`npm ci --ignore-scripts`, retryable) →
+   `downloadSceneAssets` (S3 → workspace) → `ensureNarrationAudio` /
+   `ensureMusicAudio` (**BEFORE bundling**; synthesize only if the manifest
+   lacks cached asset refs) → `bundleComposition` (`@remotion/bundler`) →
+   `renderMedia` (one long step; `@remotion/renderer`'s `onProgress` writes
+   monotonic `framesDone` to the RenderJob row — safe on replay) →
+   `generateThumbnail` → `uploadOutputs` (mp4 + thumb to S3) →
+   `markCompleted`. Cancel = API calls DBOS cancel for
    `workflowID = renderJobId`; the job row flips to `canceled`.
    "Run in background" is purely a UI affordance — the workflow is always
    asynchronous.
+
+   **Why audio before bundle.** Remotion's `bundle()` **snapshots assets at
+   bundle time**; audio synthesized *after* bundling is excluded from the
+   bundle unless referenced via `inputProps` URLs. Synthesizing narration/music
+   into the workspace **before** `bundleComposition` guarantees the audio is
+   present in the bundle. Consequently the RenderJob status sequence now
+   reports **`synthesizing` before `bundling`** (matching §6c).
+
+   **Untrusted-code isolation.** The cloned repo is **user-controlled code**,
+   so: (1) `npm ci` always runs with **`--ignore-scripts`** (no lifecycle
+   scripts execute); and (2) `bundleComposition` / `renderMedia` run in a
+   **child process with a scrubbed environment** — no `SECRETS_ENCRYPTION_KEY`,
+   `GITHUB_APP_PRIVATE_KEY`, provider keys, or DB credentials are exposed to
+   the child. Full sandboxing (microVM / container-per-render) is **explicitly
+   post-v1**.
 10. **`cleanupOrphanedAssetsWorkflow()`** — statically-registered
     **scheduled** workflow (daily): deletes S3 objects belonging to failed/
-    canceled jobs past a retention window. (Phase-2 candidate; listed for
-    completeness.)
+    canceled jobs past a retention window, **and purges expired `Session` rows
+    (past `expiresAt`)** — not just orphaned S3 objects. (Phase-2 candidate;
+    listed for completeness.)
 
 Deliberately **not** workflows: publishing a render to the Gallery (single
 Postgres insert — plain API CRUD), reading manifests (synchronous GitHub
@@ -997,14 +1111,16 @@ app database besides DBOS workflows, and the only S3 URL signer.
 
 **Projects, versions, git-ops jobs**
 - `GET /v1/projects` (workspace grid) · `POST /v1/projects` (⇒ enqueue scaffold) · `POST /v1/projects/import` (⇒ enqueue import-verify)
+- **Create-new-repo JIT user-token hop** (zero storage — §2.3/§6b; illustrative names): `GET /v1/projects/repo-authorize-url` (returns the GitHub user-authorization redirect URL) · `POST /v1/projects/create-repo { code }` (server-side code→short-lived **user** token exchange → `POST /user/repos` (+ `PUT …/installations/:id/repositories/:repoId` if `selected`) → token **discarded, nothing stored**). Only *create-new-repo* uses this; use-existing-empty-repo and import skip it.
 - `GET/PATCH/DELETE /v1/projects/:id` (rename, soft delete)
 - `GET /v1/projects/:id/manifest?ref=` — Zod-parsed `ProjectManifest` from the branch
 - `POST /v1/projects/:id/commit { manifest, message }` (⇒ enqueue commit)
 - `POST /v1/projects/:id/publish { message }` (⇒ enqueue publish)
 - `GET /v1/projects/:id/versions` (14b dropdown) · `GET /v1/projects/:id/jobs/:jobId` (stage polling)
+- **Per-project git-ops concurrency (409):** the four git-ops-enqueuing endpoints (`POST /v1/projects`, `POST /v1/projects/import`, `POST /v1/projects/:id/commit`, `POST /v1/projects/:id/publish`) return **409** if the project already has a `queued`/`running` ProjectJob (§2.9).
 
 **AI generation**
-- `POST /v1/ai/generations` — validate against kind-specific Zod input schema, create row, enqueue via static kind→workflow map
+- `POST /v1/ai/generations` — validate against kind-specific Zod input schema, create row, enqueue via static kind→workflow map. **Rejects out-of-matrix `{kind, provider}` pairs with 422 before creating a row** (kind→provider compatibility matrix, §2.8/§7 "Provider call patterns" — e.g. `{ kind: image, provider: gloo }`).
 - `GET /v1/ai/generations/:id` · `GET /v1/projects/:id/generations` · `POST /v1/ai/generations/:id/cancel`
 
 **Renders**
@@ -1018,8 +1134,8 @@ app database besides DBOS workflows, and the only S3 URL signer.
 - `POST /v1/gallery/:id/upvote` · `DELETE /v1/gallery/:id/upvote` — authed; idempotent via the unique `(userId, galleryItemId)` constraint; `upvoteCount` updated in the same transaction
 - `POST /v1/renders/:id/gallery` (owner publishes) · `DELETE /v1/gallery/:id` (owner removes)
 
-**Files (generic S3 CRUD, ownership-scoped)**
-- `POST /v1/files/presign-upload { scope }` · `GET /v1/files/presign-download?key=` · `DELETE /v1/files?key=`
+**Files (S3 download presigning, ownership-scoped)**
+- `GET /v1/files/presign-download?key=` — ownership-scoped presigned GET **only**. (`presign-upload` and `DELETE /v1/files` are intentionally **dropped**: uploads are server-side worker operations, and deletes are handled by the cleanup workflow, §7 workflow 10 — no client-facing upload/delete surface.)
 - S3 key layout: `projects/{projectId}/assets/{assetId}`, `renders/{renderJobId}/output.mp4|thumb.jpg`
 
 **Ops**
@@ -1136,6 +1252,10 @@ unchanged. None of these remain blocking.*
    `POST /v1/test/seed` available only when `NODE_ENV !== 'production'`.
 
    **RESOLVED: flag-gated seed endpoint confirmed as proposed.**
+   **Refinement:** the seed endpoint requires **BOTH** `NODE_ENV !== 'production'`
+   **AND** an explicit opt-in flag (`SUPAGLOO_ENABLE_TEST_SEED=1`). Absent the
+   flag it **hard-404s regardless of `NODE_ENV`** — so a misconfigured non-prod
+   deployment still cannot seed unless the flag is deliberately set.
 10. **YouVersion Bible content API.** VOTD/passage project origins and
     script generation need actual verse text; only the auth SDK is
     integrated today. API availability/licensing for verse text (per
@@ -1152,6 +1272,13 @@ unchanged. None of these remain blocking.*
     Exchange API's "Get a Bible collection" endpoint at implementation time,
     not hardcoded. Turn 15's gallery mock showing NIV/ESV/NLT/NASB cards is
     placeholder art, not a requirement (noted in claude-design-review.md).
+
+    **Implementation-time verification** (mirroring §9-Q7b, and matching §7
+    workflow 5): confirm YouVersion's Data Exchange API serves **KJV/BSB verse
+    text server-side** (availability, server-to-server auth, presence in the
+    collection response). **Named fallback:** a bundled public-domain KJV/BSB
+    dataset or a public-domain Bible-text API — both translations are public
+    domain, so the fallback does not change the pipeline's licensing posture.
 11. **`database-lib` packaging.** Proposed: the package builds to `dist/`
     with the generated Prisma client included, consumed as git submodule +
     `file:` npm dependency; only the API runs `prisma migrate deploy`.

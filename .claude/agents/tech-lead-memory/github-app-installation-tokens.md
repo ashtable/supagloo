@@ -22,3 +22,18 @@ stored GitHub credentials (see [[composition-source-of-truth-in-repo]]).
 **Trade-offs:** more complex install/callback flow (installation_id
 redirect, App JWT minting) vs. classic OAuth's simple code exchange;
 accepted for the security/promise fit.
+
+**Create-new-repo exception (added 2026-07-17).** Installation tokens have a
+hard limit: they **cannot create repositories in a personal account**, and a
+repo created out-of-band is **not auto-added to a `selected` installation**.
+So the *create-new-repo* project origin does a **JIT (just-in-time)
+user-authorization hop** at project-creation time (API/BFF layer, *not* the
+DBOS scaffold workflow, which has no user context): user-auth redirect →
+server-side code exchange → **short-lived user access token** → used **once**
+for `POST /user/repos` (+ `PUT /user/installations/{id}/repositories/{repoId}`
+if `selected`) → **discarded**. **No user/refresh token is ever stored** —
+zero storage, preserving the no-repo-credential-at-rest principle.
+*use-existing-empty-repo* and *import* need no hop. The scaffold workflow's
+first git step is therefore `ensureRepoAccessible` (idempotent reachability
+check), **not** `createGithubRepo`. **Refresh-token storage was considered and
+rejected** (reintroduces a per-user credential at rest for a one-time op).

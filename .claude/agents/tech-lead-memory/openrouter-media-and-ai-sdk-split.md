@@ -28,3 +28,14 @@ async-job and byte-stream patterns don't fit AI SDK primitives.
 **Hard rule:** model ids are never hardcoded — always looked up via
 `GET /api/v1/models?output_modalities=…` / `GET /api/v1/videos/models` at
 implementation time.
+
+**Enforced kind→provider matrix (added 2026-07-17).** Because Gloo has **no
+media modalities**, `AiGeneration.provider` is constrained per `kind`:
+
+- `storyboard` / `script` → `gloo` **or** `openrouter` (structured text via
+  AI SDK `generateObject`)
+- `image` / `narration` / `music` / `video` → **`openrouter` ONLY**
+
+The matrix is a **shared `database-lib` constant** (single source of truth) and
+is **enforced at enqueue**: `POST /v1/ai/generations` rejects an out-of-matrix
+`{kind, provider}` pair with **422 before any row or workflow is created**.
