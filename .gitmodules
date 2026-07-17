@@ -7,3 +7,6 @@
 [submodule "supagloo-nodejs-dbos"]
 	path = supagloo-nodejs-dbos
 	url = https://github.com/ashtable/supagloo-nodejs-dbos
+[submodule "supagloo-prompts"]
+	path = supagloo-prompts
+	url = https://github.com/ashtable/supagloo-prompts
