@@ -1,0 +1,37 @@
+---
+name: e2e-test-infra-conventions
+description: Plan-level e2e conventions (2026-07-17, docs/plan.md) — provider-stub harness with env-overridable base URLs + local git smart-HTTP server; flag-gated /v1/test/seed built early; Stagehand real-stack mode via seed; DBOS crash/replay tests standard
+metadata:
+  type: convention
+---
+
+Established 2026-07-17 in `docs/plan.md` (Step 5 of `/design`), pending user
+approval of that plan:
+
+- **Provider-stub harness** (plan task 9): all outbound provider base URLs
+  (GitHub API, OpenRouter, Gloo, YouVersion) are env-overridable; e2e points
+  them at stub HTTP servers with call-count assertions, plus a **local git
+  smart-HTTP server** so clone/push/PR-merge flows in git-ops workflows run
+  against real git. Live-provider tests are manual/optional, never gating.
+  Stubs never ship in production images.
+- **`POST /v1/test/seed`** (flag-gated, `NODE_ENV !== 'production'`, per
+  design-delta §9-Q9) is built *early* (M2, with auth) because nearly all
+  later e2e depends on deterministic users/sessions — deliberately not left
+  to end-stage hardening.
+- **Stagehand real-stack mode**: the existing `NEXT_PUBLIC_SUPAGLOO_DEMO`
+  mock-session seam is extended so flag-gated test sessions obtain a *real*
+  session cookie via the seed endpoint — UI e2e then exercises
+  browser → BFF → API → Postgres/MinIO/DBOS for real. Old mock-session-only
+  specs are kept for pure-UI regressions. Stagehand is the UI e2e tool;
+  non-UI e2e never uses a browser.
+- **DBOS crash/replay tests are standard** for workflows where the design
+  emphasizes recovery: kill the worker mid-workflow, restart, assert
+  completed steps don't re-execute and side effects aren't duplicated
+  (flagship case: `generateVideoClipWorkflow` — stub submit count stays 1
+  across a crash between submit and poll-completion).
+- **Slow render e2e** (real `@remotion/renderer`) runs in a tagged heavy
+  lane, not on every push; the never-merge-red rule still applies to the lane.
+
+Open sign-off item recorded in plan §6: whether `mintInstallationToken`
+lives in `database-lib` (shared, recommended) or is duplicated per service
+(as the design text reads). See [[github-app-installation-tokens]].
