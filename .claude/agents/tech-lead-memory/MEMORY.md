@@ -22,3 +22,4 @@ individual files, never here.
 - [KJV/BSB generation only](kjv-bsb-generation-only.md) — generation pipeline restricted to public-domain translations; version ids resolved at implementation time
 - [Prisma exact version pin](prisma-exact-version-pin.md) — consumers must pin database-lib's exact Prisma version, CI-enforced
 - [E2E test-infra conventions](e2e-test-infra-conventions.md) — provider stubs + local git server, early /v1/test/seed, Stagehand real-stack mode, DBOS crash/replay tests standard
+- [Compose infra + root test harness](compose-infra-and-root-test-harness.md) — task-3 built: postgres/minio/minio-init compose, POSTGRES_DB=postgres gotcha, reuse-or-spawn globalSetup, root Vitest split

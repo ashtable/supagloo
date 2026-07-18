@@ -219,3 +219,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Node / root-repo test harness (Task #3)
+node_modules/
+dist/
+*.tsbuildinfo
+npm-debug.log*
+.env.local
