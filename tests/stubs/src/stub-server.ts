@@ -60,6 +60,14 @@ export interface StubDefinition {
   state: Record<string, unknown>;
   /** Clear stub-specific stores + counters on `POST /__stub/reset`. */
   onReset?: () => void;
+  /**
+   * Optional deep readiness probe. When present, `GET /__stub/health` reports
+   * `200 ok` only once this resolves truthy; until then it answers `503`. Lets a
+   * stub gate readiness on more than "the HTTP listener is up" — e.g. the
+   * git-server proving a real `git-http-backend` CGI round-trip succeeds before
+   * the harness starts driving clones at it. Absent ⇒ health is always `200`.
+   */
+  readyCheck?: () => boolean | Promise<boolean>;
 }
 
 export interface StartStubOptions {
@@ -132,6 +140,17 @@ export function startStub(
 
     // Introspection routes — never counted in the domain call log.
     if (pathname === "/__stub/health") {
+      if (def.readyCheck) {
+        let ready = false;
+        try {
+          ready = await def.readyCheck();
+        } catch {
+          ready = false;
+        }
+        if (!ready) {
+          return sendJson(res, 503, { status: "starting", stub: def.kind });
+        }
+      }
       return sendJson(res, 200, { status: "ok", stub: def.kind });
     }
     if (pathname === "/__stub/calls") {

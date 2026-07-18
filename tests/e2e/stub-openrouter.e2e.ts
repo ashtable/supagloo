@@ -59,4 +59,28 @@ describe("e2e: openrouter stub (containerized)", () => {
     const b = await (await fetch(`${BASE}/api/v1/videos`, init)).json();
     expect(b.id).toBe(a.id);
   });
+
+  it("exposes call counts via /__stub/calls, proving idempotency (byRoute vs state)", async () => {
+    // Self-contained: reset the shared container, then submit twice under one
+    // Idempotency-Key. `byRoute` counts REQUESTS (2), `state` counts JOBS (1) —
+    // the seam the video workflow's crash/replay relies on. Mirrors the github
+    // e2e's call-count test and the openrouter unit test's byRoute/state asserts,
+    // now verified against the CONTAINERIZED stub over its host port.
+    await fetch(`${BASE}/__stub/reset`, { method: "POST" });
+    const init = {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "gen_calls_e2e",
+      },
+      body: JSON.stringify({ model: "stub/video", prompt: "count me" }),
+    };
+    await fetch(`${BASE}/api/v1/videos`, init);
+    await fetch(`${BASE}/api/v1/videos`, init);
+
+    const calls = await (await fetch(`${BASE}/__stub/calls`)).json();
+    expect(calls.total).toBeGreaterThan(0);
+    expect(calls.byRoute["POST /api/v1/videos"]).toBe(2);
+    expect(calls.state.videoJobsCreated).toBe(1);
+  });
 });
