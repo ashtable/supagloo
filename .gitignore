@@ -226,3 +226,7 @@ dist/
 *.tsbuildinfo
 npm-debug.log*
 .env.local
+
+# Local Compose override (Task #8): redirects api/migrate build context to the
+# standalone api checkout for testing in-flight code before the submodule bump.
+docker-compose.override.yml

@@ -49,6 +49,40 @@ services:
         mc mb --ignore-existing local/supagloo-dev
         echo 'minio-init: bucket supagloo-dev ready'
 
+  # One-shot: apply database-lib's Prisma migrations to the `supagloo` app db,
+  # then exit. `prisma migrate deploy` reads the schema + migrations shipped
+  # inside @supagloo/database-lib via the api image's prisma.config.ts. The `api`
+  # service waits for this to complete successfully before starting.
+  # NOTE: build context is the api submodule (production form). A local,
+  # gitignored docker-compose.override.yml redirects it to ../supagloo-nodejs-api
+  # to build in-flight code before the submodule pointer is bumped.
+  migrate:
+    build:
+      context: ./supagloo-nodejs-api
+      dockerfile: Dockerfile
+    command: ["npx", "prisma", "migrate", "deploy"]
+    environment:
+      DATABASE_URL: postgres://supagloo:supagloo@postgres:5432/supagloo
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Fastify API. Public, unversioned GET /healthz -> 200 {"status":"ok"}.
+  api:
+    build:
+      context: ./supagloo-nodejs-api
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgres://supagloo:supagloo@postgres:5432/supagloo
+      PORT: "4000"
+      HOST: 0.0.0.0
+      NODE_ENV: production
+    ports:
+      - "4000:4000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
   nextjs:
     build:
       context: ./supagloo-nextjs
