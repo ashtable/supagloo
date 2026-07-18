@@ -24,3 +24,4 @@ individual files, never here.
 - [E2E test-infra conventions](e2e-test-infra-conventions.md) — provider stubs + local git server, early /v1/test/seed, Stagehand real-stack mode, DBOS crash/replay tests standard
 - [Compose infra + root test harness](compose-infra-and-root-test-harness.md) — task-3 built: postgres/minio/minio-init compose, POSTGRES_DB=postgres gotcha, reuse-or-spawn globalSetup, root Vitest split
 - [Node API bootstrap](nodejs-api-bootstrap.md) — task-8 built: Fastify CJS on node:22-slim, zod type provider, zod env loader, /healthz, db-lib file:-dep + Docker symlink + openssl gotchas, migrate service, compose-override bridge
+- [Provider-stub harness](provider-stub-harness.md) — task-9 built: env-overridable provider base URLs, containerized zero-dep stubs + git smart-HTTP server, docker-compose.test.yml overlay, /__stub introspection, git keep-alive + in-process-deadlock gotchas
