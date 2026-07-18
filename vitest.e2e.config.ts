@@ -10,7 +10,9 @@ export default defineConfig({
     environment: "node",
     include: ["tests/e2e/**/*.e2e.ts"],
     testTimeout: 60_000,
-    hookTimeout: 180_000,
+    // globalSetup may `docker compose up -d --build` the api image on a cold
+    // machine (npm install + prisma + tsc), which can exceed 180s.
+    hookTimeout: 600_000,
     fileParallelism: false,
     globalSetup: ["./tests/e2e/global-setup.ts"],
   },

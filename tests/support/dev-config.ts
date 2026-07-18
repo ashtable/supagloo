@@ -40,6 +40,11 @@ export const S3 = {
   region: process.env.S3_REGION ?? "us-east-1",
 } as const;
 
+export const API = {
+  /** Host-reachable base URL of the Fastify API (Compose maps 4000:4000). */
+  baseUrl: process.env.API_BASE_URL ?? "http://localhost:4000",
+} as const;
+
 /**
  * Build an S3 client for MinIO. Defaults to the PUBLIC (host-reachable)
  * endpoint because the tests run on the host; `forcePathStyle` is mandatory for

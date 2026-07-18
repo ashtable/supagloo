@@ -3,12 +3,16 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { Client } from "pg";
 import { HeadBucketCommand } from "@aws-sdk/client-s3";
-import { PG, S3, makeS3Client } from "../support/dev-config";
+import { PG, S3, API, makeS3Client } from "../support/dev-config";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
-/** The infra services this task stands up (NOT api/dbos/nextjs — later tasks). */
-const INFRA_SERVICES = ["postgres", "minio", "minio-init"];
+/**
+ * The stack services the e2e suite needs healthy: Postgres + MinIO (infra) plus
+ * the Task #8 one-shot `migrate` and the Fastify `api`. `nextjs`/`dbos` are
+ * later tasks.
+ */
+const INFRA_SERVICES = ["postgres", "minio", "minio-init", "migrate", "api"];
 
 function compose(args: string[]): void {
   execFileSync("docker", ["compose", ...args], {
@@ -42,15 +46,28 @@ async function bucketReachable(): Promise<boolean> {
   }
 }
 
+async function apiHealthy(): Promise<boolean> {
+  try {
+    const res = await fetch(`${API.baseUrl}/healthz`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Ready = both logical databases accept connections (proves the pg-init script
- * ran) AND the `supagloo-dev` bucket exists (proves minio-init ran).
+ * ran), the `supagloo-dev` bucket exists (proves minio-init ran), AND the API
+ * answers `GET /healthz` with 200 (proves `migrate` applied and `api` started).
  */
 async function infraReady(): Promise<boolean> {
   return (
     (await pgReachable(PG.appUrl)) &&
     (await pgReachable(PG.dbosUrl)) &&
-    (await bucketReachable())
+    (await bucketReachable()) &&
+    (await apiHealthy())
   );
 }
 
@@ -67,7 +84,10 @@ export default async function setup() {
     return;
   }
 
-  compose(["up", "-d", ...INFRA_SERVICES]);
+  // `--build` so the `migrate`/`api` images reflect the current api code (infra
+  // images are pulled, not built). The reuse path above skips this entirely when
+  // a healthy stack is already running.
+  compose(["up", "-d", "--build", ...INFRA_SERVICES]);
 
   const deadline = Date.now() + 150_000;
   while (Date.now() < deadline) {
