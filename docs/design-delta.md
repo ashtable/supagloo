@@ -250,7 +250,7 @@ an "All books ▾" filter, search, per-card upvote pills, and rank badges.)*
 | `renderJobId` | unique FK — one gallery entry per render |
 | `projectId`, `ownerId` | FKs (denormalized for listing; creator handle/avatar come from the owner) |
 | `title`, `description` | card display type ("LET THERE BE LIGHT") |
-| `scriptureReference`, `translation` | e.g. "GENESIS 1:1–4" + "KJV" — card metadata. Turn 15's mock also shows NIV/ESV/NLT/NASB cards; that spread is placeholder art, not a requirement — v1-generated items carry KJV/BSB (§9-Q10) |
+| `scriptureReference`, `translation` | e.g. "GENESIS 1:1–4" + "KJV" — card metadata, reflecting whichever translation the user actually selected (§9-Q10), not fixed to KJV/BSB. Turn 15's mock showing NIV/ESV/NLT/NASB cards is now directionally accurate rather than placeholder art. |
 | `scriptureBook` | normalized book code (e.g. `GEN`), derived from the reference at publish time — drives the "All books ▾" filter without reference-parsing at query time |
 | `durationSeconds` | the `mm:ss` badge |
 | `videoAssetKey`, `thumbnailAssetKey` | copied from the render job |
@@ -336,7 +336,7 @@ All in `database-lib` (e.g. `src/schemas/`), exported alongside Prisma types:
 
 | Schema | Purpose |
 |---|---|
-| `ProjectManifestSchema` | The `supagloo.project.json` file format (composition size/fps/aspect, ordered scenes, narrator voice, music bed, end card, captions). Validated on every read (studio open, import verify) and write (commit). Versioned (`manifestVersion: 1`). **v1 constrains the scene `translation` field to `KJV \| BSB`** — the generation pipeline only sources public-domain text (§9-Q10); the same restriction applies to any UI translation picker on project creation. |
+| `ProjectManifestSchema` | The `supagloo.project.json` file format (composition size/fps/aspect, ordered scenes, narrator voice, music bed, end card, captions). Validated on every read (studio open, import verify) and write (commit). Versioned (`manifestVersion: 1`). The scene `translation` field holds whatever translation abbreviation the user selected via the YouVersion Bible-collection picker (§9-Q10) — validated against the live collection response at generation time, not a fixed enum. Defaults to `BSB` for new projects. |
 | `GeneratedStoryboardSchema` | **LLM structured output**: scene breakdown from a passage — per-scene `name`, `scriptText`, `reference`, `translation`, `visualPrompt`, `suggestedDurationSeconds`, plus whole-video `narratorVoice` and `musicStyle` suggestions. Used with structured-output generation; the LLM response is parsed against this before persisting. |
 | `SceneVisualPromptSchema` | LLM structured output for "↻ Reroll visual" — a refined image/video prompt. |
 | `NarrationSpecSchema`, `MusicSpecSchema` | Inputs to audio synthesis (voice descriptor + per-scene scripts; music style label + duration). |
@@ -993,10 +993,10 @@ steps. Minted fresh per run, never persisted (§2.3).
 5. **`generateScriptWorkflow(generationId)`** — queue `ai-generation`.
    Steps: `loadRequestAndCredentials` (decrypt; Gloo path mints a
    short-lived token) → optional `fetchScripturePassage` (YouVersion Data
-   Exchange API, for VOTD/passage origins — **v1 source translations
-   restricted to KJV or BSB**, public domain, per §9-Q10; the YouVersion
-   version ids for these are resolved via the "Get a Bible collection"
-   endpoint at implementation time, not hardcoded) → `callLlmStructured`
+   Exchange API, for VOTD/passage origins — sources whatever translation
+   the user selected, resolved via the "Get a Bible collection" endpoint
+   at request time and never hardcoded; see §9-Q10 for the licensing
+   posture) → `callLlmStructured`
    (`retriesAllowed`, `maxAttempts: 5`, exponential backoff, `shouldRetry`
    rejects 4xx) → in-workflow Zod validation with a **bounded static
    re-prompt loop** (max 3 repair attempts — a plain `for` loop over the
@@ -1004,13 +1004,13 @@ steps. Minted fresh per run, never persisted (§2.3).
    Handles both `storyboard` (full scene breakdown) and `script`
    (single-scene text) kinds via the schema selected by the request row.
 
-   **Implementation-time verification** (mirroring §9-Q7b): confirm that
-   YouVersion's Data Exchange API actually serves **KJV/BSB verse text
-   server-side** — availability, server-to-server auth, and presence of these
-   translations in the collection response. **Named fallback:** a bundled
-   **public-domain KJV/BSB dataset** or a public-domain Bible-text API. Both
-   translations are public domain, so the fallback **does not change the
-   pipeline's licensing posture** (§9-Q10).
+   **Implementation-time verification** (mirroring §9-Q7b): the base URL
+   (`https://api.youversion.com`) and the `X-YVP-App-Key` auth header
+   requirement are confirmed against YouVersion's published docs — see
+   §9-Q10 for the full update. Still open: the exact licensing/
+   redistribution posture per translation. **Fallback:** if the live API
+   is unavailable, restrict that request to KJV/BSB (public domain)
+   rather than guessing at another translation's licensing.
 6. **`generateImageWorkflow(generationId)`** — queue `ai-generation`.
    Steps: `loadRequestAndCredentials` → `callImageModel` (retries as above)
    → `fetchAssetBytes` → `uploadAssetToS3` → `persistResult`.
@@ -1262,23 +1262,46 @@ unchanged. None of these remain blocking.*
     translation) must be verified — affects `fetchScripturePassage` in the
     script workflow.
 
-    **RESOLVED: v1 generation sources KJV or BSB only** (public domain).
-    This restricts the *generation pipeline* — `fetchScripturePassage` (§7)
-    and any translation picker when creating a project (§2.11) — because
-    Supagloo creates and **redistributes derivative video content**, which
-    has different licensing implications than read-only verse display; it is
-    independent of what YouVersion's API can technically return. The exact
-    YouVersion version ids for KJV/BSB must be resolved via the Data
-    Exchange API's "Get a Bible collection" endpoint at implementation time,
-    not hardcoded. Turn 15's gallery mock showing NIV/ESV/NLT/NASB cards is
-    placeholder art, not a requirement (noted in claude-design-review.md).
+    **RESOLVED (updated 2026-07-18, supersedes the original KJV/BSB-only
+    resolution): generation sources any translation YouVersion licenses to
+    our app for the user's chosen language** — not restricted to KJV/BSB.
+    `fetchScripturePassage` (§7 workflow 5) and the UI translation picker
+    (§2.11) both call the YouVersion Data Exchange API's "Get a Bible
+    collection" endpoint (`GET /v1/bibles?language_ranges[]=<lang>`,
+    **without** `all_available=true`) and only ever offer translations that
+    endpoint actually returns — i.e. whatever YouVersion has licensed to our
+    registered app for that language. **KJV and BSB remain the pre-selected
+    default** for new projects (public domain, zero licensing ambiguity,
+    safest quick-start), but users may override to any translation the
+    collection endpoint lists, in any language, and the generated video
+    renders whatever translation was actually selected — no silent KJV/BSB
+    substitution. Bible ids are never hardcoded (not even for KJV/BSB) —
+    always resolved via the collection endpoint at request time. Turn 15's
+    gallery mock showing NIV/ESV/NLT/NASB cards, previously called out as
+    placeholder art, is now directionally accurate.
+
+    **Accepted risk, not resolved by YouVersion's public docs**: the API
+    distinguishes bibles by `license_id` and only returns bibles "available
+    to your app" (per `developers.youversion.com/api-usage` / `/api/bibles`),
+    but nowhere documents whether that availability covers *redistribution
+    in derivative video content* specifically, versus read-only in-app
+    display — Supagloo's use case is the former. We are proceeding on the
+    assumption that "available to your app" via the (non-`all_available`)
+    collection endpoint is a usable redistribution signal. If YouVersion's
+    actual licensing terms turn out to distinguish a display-only tier from
+    a redistribution tier, this needs a follow-up conversation with
+    YouVersion and a possible narrowing back toward the public-domain-only
+    posture this replaces.
 
     **Implementation-time verification** (mirroring §9-Q7b, and matching §7
-    workflow 5): confirm YouVersion's Data Exchange API serves **KJV/BSB verse
-    text server-side** (availability, server-to-server auth, presence in the
-    collection response). **Named fallback:** a bundled public-domain KJV/BSB
-    dataset or a public-domain Bible-text API — both translations are public
-    domain, so the fallback does not change the pipeline's licensing posture.
+    workflow 5): the base URL (`https://api.youversion.com`) and the
+    `X-YVP-App-Key` auth-header requirement are now confirmed against
+    YouVersion's published docs. Still open: how our app's YouVersion
+    license grant is actually configured/expanded (a YouVersion-side
+    process, not a public API call), and the redistribution-tier question
+    above. **Fallback:** if the live API is unavailable for a given
+    request, restrict that request to KJV/BSB (public domain) rather than
+    guessing at another translation's licensing.
 11. **`database-lib` packaging.** Proposed: the package builds to `dist/`
     with the generated Prisma client included, consumed as git submodule +
     `file:` npm dependency; only the API runs `prisma migrate deploy`.
