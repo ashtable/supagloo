@@ -70,4 +70,50 @@ describe("youversion stub", () => {
     );
     expect(res.status).toBe(404);
   });
+
+  // --- Task #10: auth token-verification / userinfo endpoint -----------------
+  // Invented contract (scratch/auth-and-sessions.md §0): the API verifies a
+  // forwarded YouVersion access token by GET /auth/v1/userinfo (bearer), which
+  // returns a userinfo payload the API maps onto the User model.
+  it("GET /auth/v1/userinfo returns the Ada fixture for a valid access token", async () => {
+    stub = await createYouVersionStub();
+    const res = await fetch(`${stub.baseUrl}/auth/v1/userinfo`, {
+      headers: { authorization: "Bearer yv-access-ada" },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.id).toBe("yv-user-1001");
+    expect(body.first_name).toBe("Ada");
+    expect(body.last_name).toBe("Lovelace");
+    expect(body.email).toContain("@");
+    expect(stub.calls().state.userinfoOk).toBe(1);
+  });
+
+  it("GET /auth/v1/userinfo 401s an invalid or missing access token", async () => {
+    stub = await createYouVersionStub();
+    const invalid = await fetch(`${stub.baseUrl}/auth/v1/userinfo`, {
+      headers: { authorization: "Bearer yv-access-invalid" },
+    });
+    expect(invalid.status).toBe(401);
+    expect((await invalid.json()).error).toBe("invalid_token");
+
+    const missing = await fetch(`${stub.baseUrl}/auth/v1/userinfo`);
+    expect(missing.status).toBe(401);
+    expect(stub.calls().state.userinfoRejected).toBe(2);
+  });
+
+  it("GET /auth/v1/userinfo derives a stable user for an arbitrary token", async () => {
+    stub = await createYouVersionStub();
+    const res = await fetch(`${stub.baseUrl}/auth/v1/userinfo`, {
+      headers: { authorization: "Bearer run-42" },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.id).toBe("yv_run-42");
+    // Same token ⇒ same derived user (drives the create-vs-update branch).
+    const again = await fetch(`${stub.baseUrl}/auth/v1/userinfo`, {
+      headers: { authorization: "Bearer run-42" },
+    });
+    expect((await again.json()).id).toBe("yv_run-42");
+  });
 });
