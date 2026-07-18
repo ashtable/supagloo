@@ -46,17 +46,43 @@ skeleton now.
 `stubsReady()` (GET each `/__stub/health`); `compose()` now builds an `-f` file
 list (base + override-if-exists + test overlay). Reuse-or-spawn unchanged.
 
-**git smart-HTTP server GOTCHAS** (both cost real time to find):
+**git smart-HTTP server GOTCHAS** (all cost real time to find):
 1. Serves clone/push by shelling `git-http-backend` CGI (located via
    `git --exec-path`; forward request headers as CGI `HTTP_*` for gzip +
    protocol-v2). MUST set `Connection: close` on every CGI response — keep-alive
    reuse across the CGI hand-off stalls the git client ~11s/request.
 2. Driving git against an IN-PROCESS server DEADLOCKS: `execFileSync("git",...)`
-   blocks the event loop so the same-process server can't answer. The git-server
-   is therefore validated ONLY by the containerized e2e (separate process, host
-   `git` CLI) — there is deliberately no in-process git unit test. Use hermetic
-   git env in tests: `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
-   `GIT_TERMINAL_PROMPT=0`, explicit author/committer.
+   blocks the event loop so the same-process server can't answer. The full
+   clone/push cycle is therefore validated ONLY by the containerized e2e
+   (separate process, host `git` CLI) — no in-process git *clone* unit test. But
+   the `POST /__admin/repos` admin endpoint IS unit-testable in-process
+   (`tests/unit/stub-git-server.test.ts`) — it's plain JSON, no git-over-HTTP.
+   Use hermetic git env in tests: `GIT_CONFIG_NOSYSTEM=1`,
+   `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_TERMINAL_PROMPT=0`, explicit
+   author/committer.
+3. COLD-START RACE (fixed 2026-07-18): `/__stub/health` gating solely on the HTTP
+   listener reported "ready" before ANY `git-http-backend` CGI had spawned, so a
+   freshly-built container went healthy while the harness's first real git op
+   raced the cold CGI spawn → intermittent "Empty reply from server". Fix: a deep
+   readiness probe. `StubDefinition` gained an optional `readyCheck?: () =>
+   boolean | Promise<boolean>` hook (generic, in `stub-server.ts`); when present,
+   `/__stub/health` answers `503 {status:"starting"}` until it resolves truthy.
+   git-server's `readyCheck` forces one real `info/refs?service=git-upload-pack`
+   CGI round-trip against an internal seeded scratch repo (`__health.git`, never
+   counted in `state`/`byRoute`), memoized (single in-flight probe; cache `true`
+   once it passes; retry on failure). Other stubs leave `readyCheck` undefined ⇒
+   health stays instant `200`. No Dockerfile/global-setup change needed — both
+   already key on `res.ok`, which now means "CGI proven".
+
+**git-server SECURITY** (fixed 2026-07-18): `POST /__admin/repos` interpolates
+`name` into `<reposRoot>/<name>.git`. It was unsanitized → `{"name":"../outside/pwn"}`
+created a bare repo ABOVE reposRoot (path traversal). Now validated against
+`REPO_NAME_RE = /^[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)?$/` (single `owner/repo`
+slug); anything else → `400 {error:"invalid_name"}`. Matches real harness usage
+(`acme/demo-<ts>`). Repo creation refactored into a shared `ensureRepo(name,
+{seed,branch})` helper (reused by the admin route AND the readiness warm-up); the
+CGI spawn refactored into a low-level `invokeBackend(...)` (reused by
+`runBackend` AND the probe).
 
 **PR vs git split**: clone/branch/commit/push/merge/tag = real git (git-server);
 "PR open/merge" = GitHub REST (github stub `POST …/pulls`, `PUT …/pulls/:n/merge`).
