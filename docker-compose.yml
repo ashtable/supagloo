@@ -1,7 +1,61 @@
 services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: supagloo
+      POSTGRES_PASSWORD: supagloo
+      # Pin to the built-in `postgres` maintenance db so the image does NOT
+      # auto-create a db named after POSTGRES_USER. That makes the init script
+      # below the single source of truth for BOTH logical databases, and lets
+      # its `CREATE DATABASE supagloo;` be unconditional (no "already exists").
+      POSTGRES_DB: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # First-run init: creates `supagloo` (app) + `supagloo_dbos` (DBOS system).
+      - ./infra/pg-init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U supagloo"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    ports:
+      - "5432:5432"
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: supagloo
+      MINIO_ROOT_PASSWORD: supagloo-dev
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # web console
+
+  # One-shot: wait for MinIO to accept connections, then create the dev bucket.
+  minio-init:
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        until mc alias set local http://minio:9000 supagloo supagloo-dev; do
+          echo 'minio-init: waiting for minio...'
+          sleep 1
+        done
+        mc mb --ignore-existing local/supagloo-dev
+        echo 'minio-init: bucket supagloo-dev ready'
+
   nextjs:
     build:
       context: ./supagloo-nextjs
       dockerfile: Dockerfile
     ports:
       - "8000:3000"
+
+volumes:
+  pgdata: {}
+  minio-data: {}
