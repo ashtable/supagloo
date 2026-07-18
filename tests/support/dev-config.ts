@@ -46,6 +46,22 @@ export const API = {
 } as const;
 
 /**
+ * Host-reachable base URLs of the Task #9 provider-stub harness (the
+ * `docker-compose.test.yml` overlay). Dual-endpoint scheme, same reasoning as
+ * S3: the API container reaches the stubs at their INTERNAL Compose-network
+ * names (`http://github-stub:8080`, set by the overlay), while this host-run
+ * self-test reaches them at their published host ports below. Env-with-default
+ * so the suite runs out-of-the-box against the overlay.
+ */
+export const PROVIDERS = {
+  githubBaseUrl: process.env.GITHUB_STUB_URL ?? "http://localhost:4801",
+  openrouterBaseUrl: process.env.OPENROUTER_STUB_URL ?? "http://localhost:4802",
+  glooBaseUrl: process.env.GLOO_STUB_URL ?? "http://localhost:4803",
+  youversionBaseUrl: process.env.YOUVERSION_STUB_URL ?? "http://localhost:4804",
+  gitServerBaseUrl: process.env.GIT_SERVER_STUB_URL ?? "http://localhost:4805",
+} as const;
+
+/**
  * Build an S3 client for MinIO. Defaults to the PUBLIC (host-reachable)
  * endpoint because the tests run on the host; `forcePathStyle` is mandatory for
  * MinIO (no vhost-style bucket DNS).

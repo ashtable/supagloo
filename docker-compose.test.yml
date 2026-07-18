@@ -1,0 +1,74 @@
+# TEST-ONLY overlay (Task #9). Invoked EXPLICITLY:
+#
+#   docker compose -f docker-compose.yml [-f docker-compose.override.yml] \
+#                  -f docker-compose.test.yml up -d --build
+#
+# Docker Compose auto-merges ONLY `docker-compose.override.yml` — never a
+# `.test.yml` — so this overlay never touches a plain `docker compose up` and its
+# stub servers NEVER ship in a production image. The root e2e globalSetup adds
+# these `-f` flags automatically.
+#
+# Five stub services (one shared ./tests/stubs image, selected by STUB_KIND) give
+# the deterministic outbound-provider harness that tasks 10-47 point at, plus a
+# local git smart-HTTP server for real clone/push flows. The `api` override
+# demonstrates the env-overridable base-URL convention: the API reaches each
+# provider at its INTERNAL Compose-network name instead of the real internet.
+services:
+  github-stub:
+    build: ./tests/stubs
+    image: supagloo-provider-stub:test
+    environment:
+      STUB_KIND: github
+      PORT: "8080"
+      # clone_url values the create-repo endpoint returns point at the git-server.
+      GIT_SERVER_INTERNAL_URL: http://git-server:8080
+    ports:
+      - "4801:8080"
+
+  openrouter-stub:
+    build: ./tests/stubs
+    image: supagloo-provider-stub:test
+    environment:
+      STUB_KIND: openrouter
+      PORT: "8080"
+    ports:
+      - "4802:8080"
+
+  gloo-stub:
+    build: ./tests/stubs
+    image: supagloo-provider-stub:test
+    environment:
+      STUB_KIND: gloo
+      PORT: "8080"
+    ports:
+      - "4803:8080"
+
+  youversion-stub:
+    build: ./tests/stubs
+    image: supagloo-provider-stub:test
+    environment:
+      STUB_KIND: youversion
+      PORT: "8080"
+    ports:
+      - "4804:8080"
+
+  git-server:
+    build: ./tests/stubs
+    image: supagloo-provider-stub:test
+    environment:
+      STUB_KIND: git
+      PORT: "8080"
+      GIT_REPOS_ROOT: /repos
+    ports:
+      - "4805:8080"
+
+  # Forward-looking: point the API at the internal stub URLs (the convention this
+  # task establishes in src/config/env.ts). No API route consumes these yet
+  # (tasks 10/11/17+); the API boots fine and still serves /healthz.
+  api:
+    environment:
+      GITHUB_API_BASE_URL: http://github-stub:8080
+      GITHUB_OAUTH_BASE_URL: http://github-stub:8080
+      OPENROUTER_BASE_URL: http://openrouter-stub:8080
+      GLOO_BASE_URL: http://gloo-stub:8080
+      YOUVERSION_BASE_URL: http://youversion-stub:8080

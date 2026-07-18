@@ -1,0 +1,13 @@
+{
+  "name": "@supagloo/provider-stubs",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Task #9 test-only provider stubs (GitHub/OpenRouter/Gloo/YouVersion) + local git smart-HTTP server. Harness infra — NEVER runs in a production image.",
+  "license": "MIT",
+  "scripts": {
+    "start": "tsx src/main.ts"
+  },
+  "dependencies": {
+    "tsx": "^4.23.1"
+  }
+}
