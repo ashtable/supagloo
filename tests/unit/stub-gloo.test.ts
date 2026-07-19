@@ -41,6 +41,26 @@ describe("gloo stub", () => {
     expect(stub.calls().state.tokensIssued).toBe(1);
   });
 
+  it("rejects a reserved sentinel clientId as invalid_client (verify-failure seam)", async () => {
+    stub = await createGlooStub();
+    const url = `${stub.baseUrl}/oauth2/token`;
+
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        // Task #12: `gloo-invalid` is the deterministic bad-credential fixture the
+        // API's verify-then-store e2e uses to prove a failed mint leaves no row.
+        authorization: basic("gloo-invalid", "whatever"),
+      },
+      body: "grant_type=client_credentials",
+    });
+    expect(res.status).toBe(401);
+    expect((await res.json()).error).toBe("invalid_client");
+    // A rejected mint must not increment the issued-token counter.
+    expect(stub.calls().state.tokensIssued).toBe(0);
+  });
+
   it("serves chat-completions only with a bearer token", async () => {
     stub = await createGlooStub();
     const url = `${stub.baseUrl}/ai/v2/chat-completions`;

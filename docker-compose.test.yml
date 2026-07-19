@@ -78,3 +78,6 @@ services:
       GITHUB_APP_ID: "123456"
       GITHUB_APP_SLUG: supagloo-test
       GITHUB_APP_PRIVATE_KEY: "-----BEGIN RSA PRIVATE KEY-----\\nPLACEHOLDER\\n-----END RSA PRIVATE KEY-----"
+      # Task #12 secrets key — a deterministic all-zero 64-hex test key (32 bytes).
+      # Real deployments generate a distinct one with `openssl rand -hex 32`.
+      SECRETS_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
