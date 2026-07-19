@@ -11,6 +11,23 @@ import {
  * supagloo-nextjs/lib/gloo/llm-client.ts) plus the text-only chat-completions
  * endpoint. Gloo has NO media modalities (memory openrouter-media-and-ai-sdk-split).
  */
+
+/**
+ * Reserved sentinel clientId (Task #12): a deterministic BAD-credential fixture the
+ * API's verify-then-store e2e uses to prove a failed client-credentials mint leaves
+ * no row. Mirrors the youversion stub's invalid-token fixtures — any other clientId
+ * is accepted, this one always 401s `invalid_client`.
+ */
+const INVALID_CLIENT_ID = "gloo-invalid";
+
+/** Decode the clientId from an HTTP Basic `Authorization` header (`id:secret`). */
+function basicClientId(auth: string): string | undefined {
+  const encoded = auth.replace(/^Basic\s+/, "");
+  const decoded = Buffer.from(encoded, "base64").toString("utf8");
+  const sep = decoded.indexOf(":");
+  return sep === -1 ? decoded : decoded.slice(0, sep);
+}
+
 export function createGlooStub(
   options: StartStubOptions = {},
 ): Promise<StubHandle> {
@@ -20,6 +37,10 @@ export function createGlooStub(
     route("POST", "/oauth2/token", (ctx) => {
       const auth = ctx.header("authorization");
       if (!auth || !/^Basic\s+.+/.test(auth)) {
+        return ctx.send(401, { error: "invalid_client" });
+      }
+      // Reserved bad-credential fixture: reject BEFORE minting, without counting it.
+      if (basicClientId(auth) === INVALID_CLIENT_ID) {
         return ctx.send(401, { error: "invalid_client" });
       }
       if (ctx.form().get("grant_type") !== "client_credentials") {
