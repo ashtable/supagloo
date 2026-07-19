@@ -13,6 +13,29 @@ export interface GithubStubOptions extends StartStubOptions {
 
 const sha = () => randomBytes(20).toString("hex");
 
+/** GitHub's `per_page`: default 30, hard max 100; invalid/absent ⇒ default. */
+function clampPerPage(raw: string | null): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) return 30;
+  return Math.min(100, n);
+}
+
+/** 1-based `page`; invalid/absent ⇒ 1. */
+function clampPage(raw: string | null): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) return 1;
+  return n;
+}
+
+/** Absolute URL for a pagination page, preserving the request's host + path so
+ *  the client follows the `Link` header back to this same stub. */
+function pageUrl(reqUrl: URL, perPage: number, page: number): string {
+  const next = new URL(reqUrl.href);
+  next.searchParams.set("per_page", String(perPage));
+  next.searchParams.set("page", String(page));
+  return next.href;
+}
+
 /**
  * GitHub App stub — supports BOTH flows the design requires (design-delta §2.3):
  *   1. Installation-token flow: verify installation, App-JWT -> installation
@@ -34,6 +57,7 @@ export function createGithubStub(
     userTokensIssued: 0,
     reposCreated: 0,
     reposAddedToInstallation: 0,
+    reposListed: 0,
     pullsOpened: 0,
     pullsMerged: 0,
     refsCreated: 0,
@@ -43,9 +67,26 @@ export function createGithubStub(
 
   const hasAppJwt = (auth?: string) => !!auth && /^Bearer\s+.+/.test(auth);
   const hasUserToken = (auth?: string) => !!auth && /ghu_/.test(auth);
+  // An installation token (real prefix `ghs_`), accepted as `token …` or `Bearer …`.
+  const hasInstallationToken = (auth?: string) => !!auth && /ghs_/.test(auth);
+
+  // Deterministic repos the installation can access (Task #11 repo listing). Mixed
+  // `size`: 0 ⇒ the API derives `empty:true` (no commits yet), >0 ⇒ non-empty. The
+  // stub returns ALL of them; the API applies filter=empty|all and q= in-process.
+  const installationRepos = [
+    { id: 101, name: "empty-one", full_name: "acme/empty-one", private: true, default_branch: "main", size: 0 },
+    { id: 102, name: "empty-two", full_name: "acme/empty-two", private: false, default_branch: "main", size: 0 },
+    { id: 103, name: "psalms-video", full_name: "acme/psalms-video", private: true, default_branch: "main", size: 512 },
+    { id: 104, name: "genesis-app", full_name: "acme/genesis-app", private: false, default_branch: "main", size: 128 },
+  ];
 
   const routes = [
     route("GET", "/app/installations/:installationId", (ctx) => {
+      // Real GitHub requires an App JWT here (Task #11) — presence/shape only; the
+      // stub has no public key, so RS256 correctness is db-lib's unit-test job.
+      if (!hasAppJwt(ctx.header("authorization"))) {
+        return ctx.send(401, { message: "Requires authentication" });
+      }
       ctx.send(200, {
         id: Number(ctx.params.installationId),
         app_id: 123456,
@@ -53,6 +94,39 @@ export function createGithubStub(
         repository_selection: "selected",
         target_type: "User",
       });
+    }),
+
+    route("GET", "/installation/repositories", (ctx) => {
+      // Authenticated with a minted INSTALLATION token (not the App JWT, not a
+      // user token) — proves the API minted one for this request.
+      if (!hasInstallationToken(ctx.header("authorization"))) {
+        return ctx.send(401, { message: "Requires authentication" });
+      }
+      state.reposListed += 1;
+
+      // Real GitHub PAGINATES this endpoint (default 30, max 100 per_page) and
+      // signals more pages via an RFC 5988 `Link: rel="next"` header. Modelling
+      // that here is what lets a test force >1 page (e.g. per_page=2 over the
+      // 4-repo fixture) and catch a client that trusts a single response and
+      // silently truncates the list. Returning everything in one shot — as this
+      // stub used to — hides that data-loss bug.
+      const perPage = clampPerPage(ctx.url.searchParams.get("per_page"));
+      const page = clampPage(ctx.url.searchParams.get("page"));
+      const all = installationRepos.map((r) => ({ ...r, owner: { login: "acme" } }));
+      const start = (page - 1) * perPage;
+      const slice = all.slice(start, start + perPage);
+      const hasNext = start + perPage < all.length;
+
+      const headers: Record<string, string> = {};
+      if (hasNext) {
+        const lastPage = Math.ceil(all.length / perPage);
+        headers.link = [
+          `<${pageUrl(ctx.url, perPage, page + 1)}>; rel="next"`,
+          `<${pageUrl(ctx.url, perPage, lastPage)}>; rel="last"`,
+        ].join(", ");
+      }
+
+      ctx.send(200, { total_count: all.length, repositories: slice }, headers);
     }),
 
     route(
