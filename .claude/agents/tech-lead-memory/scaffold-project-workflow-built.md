@@ -83,3 +83,28 @@ never moves.
   workflow shells out to `git` at runtime.
 - `Prisma.InputJsonValue` won't accept `JobStage[]` (no index signature) — cast via a
   `toJson()` helper (`as unknown as Prisma.InputJsonValue`).
+
+**Post-review hardening (2026-07-19, applied to task-17 before merge — reuse for every
+git-ops workflow 18-22):**
+- **Credential redaction in the git wrapper.** Node's `execFile` rejection puts the
+  full command line (incl. the `x-access-token:<token>@` clone/push URL) verbatim into
+  `.message`/`.cmd`/`.stack` — a plaintext-token leak straight into DBOS's checkpointed
+  error record + logs. Fix in `git.ts`: `git()` catches, runs `redactUrlCredentials()`
+  (generic `/(:\/\/)([^/@\s]*)@/g` → keeps username, `:***@`; bare userinfo → `***@`;
+  redacts EVERY occurrence, not keyed to the literal token) over message+stderr, and
+  WRAPS into a fresh `GitCommandError` (NO `cause` — a cause would re-leak the raw
+  stack). Tested hermetically with REAL git: `git clone <cred-url> <non-empty-dir>`
+  fails BEFORE any network (destination-exists check) yet still carries the token in
+  Node's error → asserts redacted.
+- **Typed retry classification (the plan's promised `shouldRetry=false` on permanent
+  failures).** `GithubRestError{status}` + `isPermanentHttpStatus` (4xx≠429 permanent;
+  5xx/429 transient) thrown at the REST failure sites (422-already-exists /
+  405-already-merged idempotent paths LEFT intact — not failures). `GitCommandError`
+  carries a `permanent` flag from a conservative `isPermanentGitFailure` stderr matcher
+  (auth failed / invalid creds / repo-not-found / permission denied / HTTP 401·403·404
+  → permanent; DNS/connect/RPC/timeout → transient/retry). Composed predicate
+  `retryUnlessPermanent` lives in the standalone `scaffold-project/retry.ts` (imports
+  only the error types — cheap to unit-test WITHOUT importing the DBOS workflow module)
+  and is wired into all 4 network/git steps (`ensureRepoAccessible` unified onto it too;
+  its old inline `!(e instanceof RepoUnreachableError)` is a strict subset). Default for
+  unknown/plain errors = transient, so nothing is marked permanent by accident.
