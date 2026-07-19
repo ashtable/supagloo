@@ -50,7 +50,19 @@ LATER, separate step of the release process.
 (`~/code/supagloo-nodejs-api/supagloo-database-lib/dist/`). `dist/` is gitignored
 build output, so the submodule's tracked SOURCE stays pristine (never hand-edit
 the submodule), and the API's `node_modules/@supagloo/database-lib` symlink
-resolves the new exports live — no `npm install`.
+resolves the new exports live — no `npm install`. (The symlink target is the API's
+OWN submodule checkout `~/code/supagloo-nodejs-api/supagloo-database-lib`, NOT the
+standalone `~/code/supagloo-database-lib` — that's why you copy into it.)
+
+**Exec-bit gotcha when copying dist (task 13):** `tsc` emits
+`dist/check-prisma-version.cli.js` WITHOUT the exec bit; the API's
+`"postinstall":"check-prisma-version"` (db-lib's bin) needs it +x. A fresh `npm
+install` chmods the linked bin, but `rsync -a --delete <standalone/dist> <api-
+submodule/dist>` (or a plain copy) OVERWRITES it with the non-exec build output, so
+the NEXT `npm install` in the API dies `Permission denied` (exit 126). Fix: after
+copying dist, `chmod +x` the cli.js in both dist dirs. It has a proper
+`#!/usr/bin/env node` shebang, so +x is all it needs. (Deps still install; only the
+postinstall lifecycle fails — and it also validates the Prisma pin, so make it pass.)
 
 **Deferred to post-bump:** the containerized-API full-stack e2e AND the root
 `stub-*.e2e.ts` self-tests. Verify the same behaviour meanwhile via the

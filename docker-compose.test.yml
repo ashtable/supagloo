@@ -81,3 +81,11 @@ services:
       # Task #12 secrets key — a deterministic all-zero 64-hex test key (32 bytes).
       # Real deployments generate a distinct one with `openssl rand -hex 32`.
       SECRETS_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      # Task #13 — MinIO isn't part of the provider-stub harness (it's the real
+      # infra service from docker-compose.yml, shared by prod and test compose).
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: http://localhost:9000
+      S3_BUCKET: supagloo-dev
+      S3_ACCESS_KEY: supagloo
+      S3_SECRET_KEY: supagloo-dev
+      S3_REGION: us-east-1
