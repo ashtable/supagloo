@@ -91,6 +91,28 @@ services:
       minio-init:
         condition: service_completed_successfully
 
+  # DBOS worker. Statically-registered durable workflows + queues (git-ops,
+  # ai-generation, render). No public HTTP surface (no `ports:`) — work arrives
+  # via DBOSClient enqueue against the system db. Two databases: DATABASE_URL is
+  # the app db (`supagloo`, where workflows write domain rows); DBOS_DATABASE_URL
+  # is the DBOS system db (`supagloo_dbos`, checkpoints/queues — DBOS creates its
+  # own tables there on launch). dbos has NO migrate service of its own; it waits
+  # for the API's one-shot `migrate` so the app schema exists before workers run.
+  # NOTE: build context is the dbos submodule (production form). The gitignored
+  # docker-compose.override.yml redirects it to ../supagloo-nodejs-dbos to build
+  # in-flight code before the submodule pointer is bumped.
+  dbos:
+    build:
+      context: ./supagloo-nodejs-dbos
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgres://supagloo:supagloo@postgres:5432/supagloo
+      DBOS_DATABASE_URL: postgres://supagloo:supagloo@postgres:5432/supagloo_dbos
+      NODE_ENV: production
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
   nextjs:
     build:
       context: ./supagloo-nextjs
