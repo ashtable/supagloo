@@ -52,3 +52,12 @@ a dedicated **no-globalSetup `vitest.e2e.bundle.config.ts`** (`test:e2e:bundle`)
 test never spins Postgres. Existing DB e2e config got one additive `exclude` for `*.bundle.e2e.ts`.
 `bundle()` never reads `remotion.config.ts` (that's the CLI), so `@remotion/cli` is only in the
 GENERATED project's package.json, not installed in dbos.
+
+**Post-review fix (2026-07-19):** `applyManifest`'s stale-scene cleanup does
+`rm(join(scenesAbs, name), { force: true, recursive: true })` — `recursive: true` is REQUIRED.
+The generator only writes flat `.tsx` into `src/scenes/`, but the cleanup `readdir`s whatever is
+actually on disk, and `fs.rm` with `{ force: true }` alone throws `ERR_FS_EISDIR` on a directory.
+Once repo-import (Task 19) lands, an imported repo's `src/scenes/` shape is NOT validated by
+`verifySupaglooProject`/`parseManifest`, so a stray subdirectory there would crash cleanup without
+`recursive`. Guarded by a red/green unit test in `scaffold.test.ts` ("cleans up a stray
+subdirectory under src/scenes without crashing").
