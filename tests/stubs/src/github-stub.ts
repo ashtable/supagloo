@@ -34,6 +34,7 @@ export function createGithubStub(
     userTokensIssued: 0,
     reposCreated: 0,
     reposAddedToInstallation: 0,
+    reposListed: 0,
     pullsOpened: 0,
     pullsMerged: 0,
     refsCreated: 0,
@@ -43,15 +44,48 @@ export function createGithubStub(
 
   const hasAppJwt = (auth?: string) => !!auth && /^Bearer\s+.+/.test(auth);
   const hasUserToken = (auth?: string) => !!auth && /ghu_/.test(auth);
+  // An installation token (real prefix `ghs_`), accepted as `token …` or `Bearer …`.
+  const hasInstallationToken = (auth?: string) => !!auth && /ghs_/.test(auth);
+
+  // Deterministic repos the installation can access (Task #11 repo listing). Mixed
+  // `size`: 0 ⇒ the API derives `empty:true` (no commits yet), >0 ⇒ non-empty. The
+  // stub returns ALL of them; the API applies filter=empty|all and q= in-process.
+  const installationRepos = [
+    { id: 101, name: "empty-one", full_name: "acme/empty-one", private: true, default_branch: "main", size: 0 },
+    { id: 102, name: "empty-two", full_name: "acme/empty-two", private: false, default_branch: "main", size: 0 },
+    { id: 103, name: "psalms-video", full_name: "acme/psalms-video", private: true, default_branch: "main", size: 512 },
+    { id: 104, name: "genesis-app", full_name: "acme/genesis-app", private: false, default_branch: "main", size: 128 },
+  ];
 
   const routes = [
     route("GET", "/app/installations/:installationId", (ctx) => {
+      // Real GitHub requires an App JWT here (Task #11) — presence/shape only; the
+      // stub has no public key, so RS256 correctness is db-lib's unit-test job.
+      if (!hasAppJwt(ctx.header("authorization"))) {
+        return ctx.send(401, { message: "Requires authentication" });
+      }
       ctx.send(200, {
         id: Number(ctx.params.installationId),
         app_id: 123456,
         account: { login: "acme" },
         repository_selection: "selected",
         target_type: "User",
+      });
+    }),
+
+    route("GET", "/installation/repositories", (ctx) => {
+      // Authenticated with a minted INSTALLATION token (not the App JWT, not a
+      // user token) — proves the API minted one for this request.
+      if (!hasInstallationToken(ctx.header("authorization"))) {
+        return ctx.send(401, { message: "Requires authentication" });
+      }
+      state.reposListed += 1;
+      ctx.send(200, {
+        total_count: installationRepos.length,
+        repositories: installationRepos.map((r) => ({
+          ...r,
+          owner: { login: "acme" },
+        })),
       });
     }),
 

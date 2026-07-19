@@ -63,8 +63,11 @@ services:
       - "4805:8080"
 
   # Forward-looking: point the API at the internal stub URLs (the convention this
-  # task establishes in src/config/env.ts). No API route consumes these yet
-  # (tasks 10/11/17+); the API boots fine and still serves /healthz.
+  # task establishes in src/config/env.ts). The Task #11 GitHub connection routes
+  # consume the GitHub App vars below; the containerized-API full-stack e2e is
+  # deferred until the db-lib submodule bump (the in-process API e2e supplies its
+  # own generated key meanwhile), so GITHUB_APP_PRIVATE_KEY here is a placeholder —
+  # replace it with a real test RSA key (escaped \n) when that e2e is enabled.
   api:
     environment:
       GITHUB_API_BASE_URL: http://github-stub:8080
@@ -72,3 +75,6 @@ services:
       OPENROUTER_BASE_URL: http://openrouter-stub:8080
       GLOO_BASE_URL: http://gloo-stub:8080
       YOUVERSION_BASE_URL: http://youversion-stub:8080
+      GITHUB_APP_ID: "123456"
+      GITHUB_APP_SLUG: supagloo-test
+      GITHUB_APP_PRIVATE_KEY: "-----BEGIN RSA PRIVATE KEY-----\\nPLACEHOLDER\\n-----END RSA PRIVATE KEY-----"

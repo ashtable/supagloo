@@ -14,14 +14,55 @@ describe("github stub", () => {
     if (stub) await stub.close();
   });
 
-  it("verifies an installation", async () => {
+  it("requires an App JWT to verify an installation, then returns it", async () => {
     stub = await createGithubStub();
-    const res = await fetch(`${stub.baseUrl}/app/installations/42`);
+
+    // Real GitHub 401s GET /app/installations/:id without an App JWT (Task #11:
+    // the stub now enforces it so the callback e2e proves the API signs one).
+    const unauthed = await fetch(`${stub.baseUrl}/app/installations/42`);
+    expect(unauthed.status).toBe(401);
+
+    const res = await fetch(`${stub.baseUrl}/app/installations/42`, {
+      headers: { authorization: "Bearer app.jwt.token" },
+    });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.id).toBe(42);
     expect(body.account.login).toBeTypeOf("string");
     expect(["all", "selected"]).toContain(body.repository_selection);
+  });
+
+  it("lists installation repositories only with an installation token", async () => {
+    stub = await createGithubStub();
+    const url = `${stub.baseUrl}/installation/repositories`;
+
+    const unauthed = await fetch(url);
+    expect(unauthed.status).toBe(401);
+
+    const res = await fetch(url, {
+      headers: { authorization: "token ghs_stub_inst_42_1" },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(Array.isArray(body.repositories)).toBe(true);
+    expect(body.repositories.length).toBeGreaterThan(1);
+
+    // A repo object carries enough to derive `empty` (size 0) and to search.
+    const empties = body.repositories.filter((r: any) => r.size === 0);
+    const nonEmpties = body.repositories.filter((r: any) => r.size > 0);
+    expect(empties.length).toBeGreaterThan(0);
+    expect(nonEmpties.length).toBeGreaterThan(0);
+    for (const r of body.repositories) {
+      expect(r.full_name).toBeTypeOf("string");
+      expect(r.owner.login).toBeTypeOf("string");
+    }
+
+    // `state.reposListed` counts only AUTHORIZED listings (1); `byRoute` counts
+    // every request to the template — the unauthed 401 + the authed 200 = 2.
+    expect(stub.calls().state.reposListed).toBe(1);
+    expect(
+      stub.calls().byRoute["GET /installation/repositories"],
+    ).toBe(2);
   });
 
   it("requires an App JWT to mint an installation token, then mints one", async () => {
