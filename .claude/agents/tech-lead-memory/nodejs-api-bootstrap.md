@@ -66,3 +66,44 @@ bump — reusable bridge for every "test uncommitted submodule code" step.
 Root e2e harness: `INFRA_SERVICES` now includes `migrate`+`api`; `infraReady()`
 also gates on `GET :4000/healthz`; spawn uses `up -d --build`; `API.baseUrl` added
 to `tests/support/dev-config.ts`.
+
+**Railway can't build with the submodule — clone db-lib at build time (fix
+2026-07-18):** Railway does NOT initialize git submodules and does NOT copy the
+outer repo's `.git` into the Dockerfile build context, so the original `COPY
+supagloo-database-lib/...` in the deps stage resolved to an EMPTY dir on Railway
+and the build failed on the missing `package.json`. Host + Compose builds passed
+(submodule populated there), which masked it. This is a hard platform constraint,
+not a config toggle. **Fix:** the deps stage installs `git ca-certificates` (same
+apt layer as openssl) and **git-clones db-lib from its public GitHub URL** —
+`git clone https://github.com/ashtable/supagloo-database-lib.git … && git checkout
+"${DATABASE_LIB_REF}" && rm -rf .git` — instead of COPYing it, checked out at an
+exact commit via `ARG DATABASE_LIB_REF=<sha>`. Pin a SHA, never a moving branch
+(main), so the image stays as reproducible as the submodule pin. Also added
+`supagloo-database-lib` to `.dockerignore` so the local checkout can't leak back
+into the context and a plain `docker build` reproduces Railway's empty-submodule
+condition. Everything downstream (npm ci/build of db-lib, the file: symlink COPY'd
+into builder/runner) is unchanged. Proof that matters: build from an *emptied*
+submodule dir, not the populated one (the old broken COPY also passes populated).
+
+**ARG↔submodule lockstep + guardrail:** whenever a "Bump supagloo-database-lib
+submodule to `<sha>`" commit lands, the Dockerfile's `ARG DATABASE_LIB_REF` default
+MUST be updated to that same SHA **in the same commit** — the Dockerfile can't read
+the real pin at build time (no `.git` on Railway), so the ARG is the only source of
+truth for the image. A co-located guardrail unit test
+`src/dockerfile-database-lib-pin.test.ts` fails if the ARG drifts from the recorded
+gitlink (read via `git ls-files -s supagloo-database-lib`, chosen over `git
+submodule status` because it reads the index gitlink — immune to the submodule's
+working-tree checkout, which devs point at in-flight db-lib code before a bump — and
+works even when the submodule dir is uninitialized). It needs `.git` present, so it
+runs locally/CI, outside the Railway/Docker build boundary. Extends
+[[prisma-exact-version-pin]]'s "consumers enforce their own pin" pattern.
+
+**This lands on nextjs + dbos too — copy the pattern, don't reintroduce the COPY:**
+`supagloo-nextjs` already carries the `supagloo-database-lib` submodule and will hit
+this exact landmine the moment it adds a `file:` db-lib dependency + a `COPY
+supagloo-database-lib/...` Dockerfile step (today its Dockerfile never references
+db-lib, so it is NOT currently broken). `supagloo-nodejs-dbos` (plan Task 15, not yet
+bootstrapped) will need the same clone-at-build-time pattern when it wires up
+Prisma/db-lib. Both should adopt the deps-stage form from the start: git-clone at a
+pinned `DATABASE_LIB_REF` ARG + `.dockerignore` exclusion + the drift guardrail test
+— never the `COPY <submodule-dir>/...` form (it only appears to work locally).

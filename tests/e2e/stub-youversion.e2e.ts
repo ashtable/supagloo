@@ -38,4 +38,18 @@ describe("e2e: youversion stub (containerized)", () => {
     );
     expect(niv.status).toBe(400);
   });
+
+  // Task #10: the containerized userinfo endpoint used by POST /v1/auth/youversion.
+  it("verifies a YouVersion access token via /auth/v1/userinfo", async () => {
+    const ok = await fetch(`${BASE}/auth/v1/userinfo`, {
+      headers: { authorization: "Bearer yv-access-ada" },
+    });
+    expect(ok.status).toBe(200);
+    expect((await ok.json()).id).toBe("yv-user-1001");
+
+    const bad = await fetch(`${BASE}/auth/v1/userinfo`, {
+      headers: { authorization: "Bearer yv-access-invalid" },
+    });
+    expect(bad.status).toBe(401);
+  });
 });
