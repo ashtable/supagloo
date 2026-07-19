@@ -89,6 +89,29 @@ on current image, 404 on stale). Root `stub-github.e2e.ts` + containerized-API
 full-stack e2e DEFERRED to the submodule bump; covered meanwhile by root unit +
 in-process API e2e. Final: db-lib 139 unit, API 83 unit + 10 e2e, root 63 unit.
 
+**Pagination follow-up (2026-07-18, code-review fix, task 11 close-out):**
+`GET /installation/repositories` is PAGINATED (default 30, max 100 per_page) — the
+first cut made ONE unpaginated fetch and silently truncated any installation with
+>1 page of repos (user's target repo vanishing from the picker, no error).
+`listInstallationRepos` now: mints the token ONCE per call and REUSES it across
+every page (the "fresh-per-call" invariant is per-call, not per-HTTP-request — so
+the mint count stays 1/list, preserving the e2e's `installationTokensIssued===2`),
+requests `?per_page=100`, and follows `Link: rel="next"` verbatim (Octokit-style;
+`parseNextLink` regex) until absent → terminates. The github-stub now honors
+`page`/`per_page` (slices `installationRepos`, emits `Link: rel="next"`+`rel="last"`
+only while more pages remain, absent on the last page) so a test can force >1 page
+via `per_page=2` over the 4-repo fixture. Proven by a client unit test (injected
+2-page fetch → union of pages + multiple requests + single mint) and a stub unit
+test. Did NOT extend the API e2e: the shared containerized stub has a fixed 4-repo
+fixture and the API always sends `per_page=100`, so forcing >1 page over real HTTP
+would need >100 repos, which breaks the mint-per-call e2e's hard
+`byRoute["GET /installation/repositories"]===2` (each list would issue 2+ requests).
+The unit tests pin the mechanism precisely; the existing e2e stays green (4<100 ⇒
+one page, no `next`). Files: `github-app-client.ts` (+`parseNextLink`),
+`github-app-client.test.ts`, `github-stub.ts` (+`clampPerPage`/`clampPage`/`pageUrl`),
+`stub-github.test.ts`. No db-lib change (API+stub only). Final: API 84 unit + 10 e2e,
+root 64 unit.
+
 **OUT OF SCOPE (built later):** create-new-repo JIT zero-storage user-token hop
 (§2.3/§6b) — structurally different (user-auth code exchange, single-use); the
 stub's `/login/oauth/access_token` + `/user/repos` routes exist from task 9 but the

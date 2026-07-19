@@ -65,6 +65,42 @@ describe("github stub", () => {
     ).toBe(2);
   });
 
+  it("paginates /installation/repositories via page/per_page and a Link: rel=\"next\" header", async () => {
+    // Real GitHub paginates this endpoint. The stub must too, or the API client's
+    // single-fetch truncation bug stays invisible: with per_page=2 over the
+    // 4-repo fixture there are two pages, and only page 1 carries `rel="next"`.
+    stub = await createGithubStub();
+    const auth = { authorization: "token ghs_stub_inst_42_1" };
+
+    const p1 = await fetch(
+      `${stub.baseUrl}/installation/repositories?per_page=2&page=1`,
+      { headers: auth },
+    );
+    expect(p1.status).toBe(200);
+    const b1 = await p1.json();
+    expect(b1.repositories.map((r: any) => r.id)).toEqual([101, 102]);
+    expect(b1.total_count).toBe(4);
+
+    const link1 = p1.headers.get("link");
+    expect(link1).toContain('rel="next"');
+    const next = link1!.match(/<([^>]+)>\s*;\s*rel="next"/)![1];
+    expect(next).toContain("per_page=2");
+    expect(next).toContain("page=2");
+
+    // Page 2 is the LAST page: remaining repos, and NO `rel="next"` — the client
+    // uses that absence to stop, so the union is complete and the loop ends.
+    const p2 = await fetch(next, { headers: auth });
+    expect(p2.status).toBe(200);
+    const b2 = await p2.json();
+    expect(b2.repositories.map((r: any) => r.id)).toEqual([103, 104]);
+    expect(p2.headers.get("link") ?? "").not.toContain('rel="next"');
+
+    // Union across pages == the full fixture: nothing silently dropped.
+    expect(
+      [...b1.repositories, ...b2.repositories].map((r: any) => r.id),
+    ).toEqual([101, 102, 103, 104]);
+  });
+
   it("requires an App JWT to mint an installation token, then mints one", async () => {
     stub = await createGithubStub();
     const url = `${stub.baseUrl}/app/installations/42/access_tokens`;

@@ -13,6 +13,29 @@ export interface GithubStubOptions extends StartStubOptions {
 
 const sha = () => randomBytes(20).toString("hex");
 
+/** GitHub's `per_page`: default 30, hard max 100; invalid/absent ⇒ default. */
+function clampPerPage(raw: string | null): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) return 30;
+  return Math.min(100, n);
+}
+
+/** 1-based `page`; invalid/absent ⇒ 1. */
+function clampPage(raw: string | null): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) return 1;
+  return n;
+}
+
+/** Absolute URL for a pagination page, preserving the request's host + path so
+ *  the client follows the `Link` header back to this same stub. */
+function pageUrl(reqUrl: URL, perPage: number, page: number): string {
+  const next = new URL(reqUrl.href);
+  next.searchParams.set("per_page", String(perPage));
+  next.searchParams.set("page", String(page));
+  return next.href;
+}
+
 /**
  * GitHub App stub — supports BOTH flows the design requires (design-delta §2.3):
  *   1. Installation-token flow: verify installation, App-JWT -> installation
@@ -80,13 +103,30 @@ export function createGithubStub(
         return ctx.send(401, { message: "Requires authentication" });
       }
       state.reposListed += 1;
-      ctx.send(200, {
-        total_count: installationRepos.length,
-        repositories: installationRepos.map((r) => ({
-          ...r,
-          owner: { login: "acme" },
-        })),
-      });
+
+      // Real GitHub PAGINATES this endpoint (default 30, max 100 per_page) and
+      // signals more pages via an RFC 5988 `Link: rel="next"` header. Modelling
+      // that here is what lets a test force >1 page (e.g. per_page=2 over the
+      // 4-repo fixture) and catch a client that trusts a single response and
+      // silently truncates the list. Returning everything in one shot — as this
+      // stub used to — hides that data-loss bug.
+      const perPage = clampPerPage(ctx.url.searchParams.get("per_page"));
+      const page = clampPage(ctx.url.searchParams.get("page"));
+      const all = installationRepos.map((r) => ({ ...r, owner: { login: "acme" } }));
+      const start = (page - 1) * perPage;
+      const slice = all.slice(start, start + perPage);
+      const hasNext = start + perPage < all.length;
+
+      const headers: Record<string, string> = {};
+      if (hasNext) {
+        const lastPage = Math.ceil(all.length / perPage);
+        headers.link = [
+          `<${pageUrl(ctx.url, perPage, page + 1)}>; rel="next"`,
+          `<${pageUrl(ctx.url, perPage, lastPage)}>; rel="last"`,
+        ].join(", ");
+      }
+
+      ctx.send(200, { total_count: all.length, repositories: slice }, headers);
     }),
 
     route(
