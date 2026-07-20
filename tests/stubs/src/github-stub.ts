@@ -61,9 +61,18 @@ export function createGithubStub(
     pullsOpened: 0,
     pullsMerged: 0,
     refsCreated: 0,
+    contentsRead: 0,
   };
   const prCounters = new Map<string, number>();
   const mergedPrs = new Set<string>();
+  // In-memory Contents-API store (Task #20 manifest read). Keyed
+  // `owner/repo/ref/path` → base64-encoded file content. Seeded by tests via
+  // POST /__admin/contents (mirrors the git-server stub's POST /__admin/repos idiom).
+  // The manifest read hits GitHub's Contents API over HTTP, not git, and the git-server
+  // stub shares no filesystem with this stub — so this stub owns its own file store.
+  const contentsStore = new Map<string, string>();
+  const contentsKey = (owner: string, repo: string, ref: string, path: string) =>
+    `${owner}/${repo}/${ref}/${path}`;
 
   const hasAppJwt = (auth?: string) => !!auth && /^Bearer\s+.+/.test(auth);
   const hasUserToken = (auth?: string) => !!auth && /ghu_/.test(auth);
@@ -229,6 +238,69 @@ export function createGithubStub(
         object: { sha: req.sha ?? sha(), type: "commit" },
       });
     }),
+
+    // Contents API read (Task #20 manifest read). Authenticated with a minted
+    // INSTALLATION token (proves the API minted one for this read). `:path` is a
+    // single segment — the manifest lives at the repo root (supagloo.project.json).
+    route("GET", "/repos/:owner/:repo/contents/:path", (ctx) => {
+      if (!hasInstallationToken(ctx.header("authorization"))) {
+        return ctx.send(401, { message: "Requires authentication" });
+      }
+      const ref = ctx.url.searchParams.get("ref") ?? "";
+      const key = contentsKey(
+        ctx.params.owner,
+        ctx.params.repo,
+        ref,
+        ctx.params.path,
+      );
+      const encoded = contentsStore.get(key);
+      if (encoded === undefined) {
+        return ctx.send(404, { message: "Not Found" });
+      }
+      state.contentsRead += 1;
+      ctx.send(200, {
+        type: "file",
+        encoding: "base64",
+        name: ctx.params.path,
+        path: ctx.params.path,
+        sha: sha(),
+        size: Buffer.from(encoded, "base64").length,
+        content: encoded,
+      });
+    }),
+
+    // Seed a file into the Contents-API store. Body: {owner, repo, ref, path, content}
+    // (content is the RAW file text; the stub base64-encodes + stores it). In-memory
+    // only ⇒ no filesystem path-traversal surface (git-server's concern); just requires
+    // the five string fields.
+    route("POST", "/__admin/contents", (ctx) => {
+      const body =
+        ctx.json<{
+          owner?: string;
+          repo?: string;
+          ref?: string;
+          path?: string;
+          content?: string;
+        }>() ?? {};
+      const { owner, repo, ref, path, content } = body;
+      if (
+        !owner ||
+        !repo ||
+        !ref ||
+        !path ||
+        typeof content !== "string"
+      ) {
+        return ctx.send(400, {
+          error: "invalid_seed",
+          message: "owner, repo, ref, path (non-empty) and content (string) are required",
+        });
+      }
+      contentsStore.set(
+        contentsKey(owner, repo, ref, path),
+        Buffer.from(content, "utf8").toString("base64"),
+      );
+      ctx.send(201, { ok: true });
+    }),
   ];
 
   return startStub(
@@ -242,6 +314,7 @@ export function createGithubStub(
         }
         prCounters.clear();
         mergedPrs.clear();
+        contentsStore.clear();
       },
     },
     options,

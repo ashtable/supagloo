@@ -210,4 +210,72 @@ describe("github stub", () => {
     expect(calls.byRoute["GET /app/installations/:installationId"]).toBe(2);
     expect(calls.total).toBe(2);
   });
+
+  // Task #20: the Contents API read (manifest read) + its in-memory seed. The
+  // manifest-read endpoint hits GitHub's Contents API over HTTP (not git), so the
+  // github-stub grows its own contents store seeded via POST /__admin/contents.
+  it("seeds a file via /__admin/contents then serves it (base64) only with an installation token", async () => {
+    stub = await createGithubStub();
+
+    const seed = await fetch(`${stub.baseUrl}/__admin/contents`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        owner: "acme",
+        repo: "psalms-video",
+        ref: "v0.0.1",
+        path: "supagloo.project.json",
+        content: '{"manifestVersion":1}',
+      }),
+    });
+    expect(seed.status).toBe(201);
+
+    const url = `${stub.baseUrl}/repos/acme/psalms-video/contents/supagloo.project.json?ref=v0.0.1`;
+
+    // Real GitHub requires auth; the stub proves the API minted an installation token.
+    expect((await fetch(url)).status).toBe(401);
+
+    const res = await fetch(url, {
+      headers: { authorization: "token ghs_stub_inst_42_1" },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.type).toBe("file");
+    expect(body.encoding).toBe("base64");
+    expect(body.path).toBe("supagloo.project.json");
+    expect(Buffer.from(body.content, "base64").toString("utf8")).toBe(
+      '{"manifestVersion":1}',
+    );
+  });
+
+  it("404s the Contents API for an unseeded owner/repo/ref/path", async () => {
+    stub = await createGithubStub();
+    const res = await fetch(
+      `${stub.baseUrl}/repos/acme/nope/contents/supagloo.project.json?ref=v9.9.9`,
+      { headers: { authorization: "token ghs_stub_inst_42_1" } },
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("clears the seeded contents store on /__stub/reset", async () => {
+    stub = await createGithubStub();
+    await fetch(`${stub.baseUrl}/__admin/contents`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        owner: "acme",
+        repo: "psalms-video",
+        ref: "v0.0.1",
+        path: "supagloo.project.json",
+        content: "{}",
+      }),
+    });
+    await fetch(`${stub.baseUrl}/__stub/reset`, { method: "POST" });
+
+    const res = await fetch(
+      `${stub.baseUrl}/repos/acme/psalms-video/contents/supagloo.project.json?ref=v0.0.1`,
+      { headers: { authorization: "token ghs_stub_inst_42_1" } },
+    );
+    expect(res.status).toBe(404);
+  });
 });
