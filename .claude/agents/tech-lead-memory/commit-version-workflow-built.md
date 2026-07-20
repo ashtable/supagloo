@@ -55,3 +55,21 @@ DBOS-level resume (park after commitAndPush → resume → still exactly one com
 [[in-flight-dblib-e2e-constraint]] — api/dbos ran in-process against the rsync'd local
 db-lib. `authenticatedCloneUrl` is now copy #3 (scaffold/import/commit) — flagged for a
 future extraction to `scaffold-project/git.ts`; not refactored here to avoid churn.
+
+**Push-failure rollback (code-review fix, 2026-07-20):** `commitAndPush` is a
+`NETWORK_RETRY` step, so a transient `pushBranch` failure makes DBOS re-invoke the SAME
+step callback IN-PROCESS (plain retry loop, no crash/replay) against the SAME on-disk
+workspace (`ensureCommitClone` only re-clones if the dir is GONE). The trailer idempotency
+(`headCommitHasJobId` inspects only LOCAL HEAD) cannot tell "committed AND pushed" from
+"committed but push failed" — so a left-behind local commit would make the retry hit Case 1
+and falsely report "already pushed", writing a never-pushed SHA into `ProjectVersion` +
+marking the job succeeded while the remote tip never moved (silent DB↔remote divergence,
+worse than a double-commit because nothing errors). FIX (in `commitBranch`, Case 2 only):
+capture `preCommitSha = revParse(HEAD)` before `commitWithMessage`, wrap ONLY the push in
+try/catch, and on push failure `resetHard(path, preCommitSha)` (new helper in
+`commit-version/git.ts`) before rethrowing — so the retry re-derives the dirty tree via the
+idempotent `applyManifest` and correctly re-takes Case 2. Reset is scoped to push failure,
+NOT commit failure (a failed `commitWithMessage` never made a commit). `commitBranch` gained
+a `CommitBranchDeps { push? }` DI seam purely so the hermetic test can inject a throwing
+push (no mocking lib — matches the hand-rolled-fake convention). Guard: don't "simplify" the
+try/catch away.
