@@ -74,6 +74,10 @@ services:
       dockerfile: Dockerfile
     environment:
       DATABASE_URL: postgres://supagloo:supagloo@postgres:5432/supagloo
+      # Task #18 (design-delta §5.1): the DBOS SYSTEM db the API enqueues git-ops jobs
+      # to via DBOSClient (the same system db the `dbos:` worker consumes). Distinct
+      # from DATABASE_URL (the app db). The API never runs the DBOS runtime.
+      DBOS_DATABASE_URL: postgres://supagloo:supagloo@postgres:5432/supagloo_dbos
       PORT: "4000"
       HOST: 0.0.0.0
       NODE_ENV: production
