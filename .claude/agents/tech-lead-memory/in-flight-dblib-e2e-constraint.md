@@ -46,10 +46,19 @@ genuine bug that only surfaced once the fake resolution was removed).
 **A note on the write-into-submodule question**: rebuilding a submodule's OWN
 `dist/` from its OWN already-correctly-pinned source, using its own `npm run build`,
 is a normal, sanctioned dependency-consumption step — not "editing the submodule."
-In practice, though, the auto-mode classifier blocks *any* write action with a cwd
-inside a submodule checkout path, including running that build script — so this step
-currently requires the user to run it manually (hand them the exact `cd ... && npm
-run build` command). Don't try another tool to route around that block; ask.
+The auto-mode classifier blocks *any* write action with a cwd inside a submodule
+checkout path by default, including running that build script — **but the user has
+explicitly granted standing permission for exactly this one exception (2026-07-22):
+running `npm install` and/or `npm run build` inside a nested `supagloo-database-lib`
+submodule checkout, in any of the three consumer projects that have it
+(`supagloo-nodejs-dbos`, `supagloo-nodejs-api`, `supagloo-nextjs` — and their
+duplicated copies inside root's own submodule tree).** That's the only sanctioned
+write-in-a-submodule action — it must only ever regenerate gitignored build
+artifacts (`dist/`, `node_modules`, generated Prisma client) from the submodule's
+own already-correctly-pinned source. Never use it to copy files in from elsewhere,
+edit tracked source, or run arbitrary other scripts. If the classifier still blocks
+it in a given case, stop and ask rather than trying another tool to route around it
+— the standing permission is scoped to this specific action, not a general license.
 
 ---
 
