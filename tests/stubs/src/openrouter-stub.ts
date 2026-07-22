@@ -18,6 +18,8 @@ interface VideoJob {
 
 const FAKE_MP3 = Buffer.from([0xff, 0xfb, 0x90, 0x64, 0x00, 0x00, 0x00, 0x00]);
 const FAKE_MP4 = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70]);
+// PNG magic number + a couple of bytes — enough for the image workflow to upload real bytes.
+const FAKE_PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 /**
  * OpenRouter stub. The centerpiece is the async VIDEO-JOB state machine
@@ -41,6 +43,7 @@ export function createOpenRouterStub(
     chatCompletions: 0,
     speechRequests: 0,
     videoJobsCreated: 0,
+    imageRequests: 0,
   };
   const jobs = new Map<string, VideoJob>();
   const idempotency = new Map<string, string>();
@@ -144,6 +147,23 @@ export function createOpenRouterStub(
       });
     }),
 
+    // Task #32: OpenAI-Images-compatible image generation. `POST /api/v1/images/generations`
+    // → { created, data: [{ url }] }; the URL points at the download route below which serves
+    // the fake PNG bytes. The generateImage workflow calls this (callImageModel), then fetches
+    // the URL (fetchAssetBytes), then uploads the bytes to S3.
+    route("POST", "/api/v1/images/generations", (ctx) => {
+      state.imageRequests += 1;
+      const id = state.imageRequests;
+      ctx.send(200, {
+        created: Math.floor(Date.now() / 1000),
+        data: [{ url: `${ctx.url.origin}/api/v1/images/download/${id}` }],
+      });
+    }),
+
+    route("GET", "/api/v1/images/download/:id", (ctx) => {
+      ctx.sendRaw(200, FAKE_PNG, { "content-type": "image/png" });
+    }),
+
     route("POST", "/api/v1/videos", (ctx) => {
       const idemKey = ctx.header("idempotency-key");
       if (idemKey && idempotency.has(idemKey)) {
@@ -235,6 +255,7 @@ export function createOpenRouterStub(
         state.chatCompletions = 0;
         state.speechRequests = 0;
         state.videoJobsCreated = 0;
+        state.imageRequests = 0;
         jobs.clear();
         idempotency.clear();
         chatScript.length = 0;

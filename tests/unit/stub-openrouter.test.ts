@@ -158,6 +158,28 @@ describe("openrouter stub", () => {
     expect(bytes.length).toBeGreaterThan(0);
   });
 
+  it("generates an image URL + serves the bytes (Task #32)", async () => {
+    stub = await createOpenRouterStub();
+    const res = await fetch(`${stub.baseUrl}/api/v1/images/generations`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "stub/image-model", prompt: "a sunrise" }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const url = body.data[0].url as string;
+    expect(url).toContain("/api/v1/images/download/");
+    expect(stub.calls().state.imageRequests).toBe(1);
+
+    // The returned URL serves raw PNG bytes (what fetchAssetBytes downloads).
+    const download = await fetch(url);
+    expect(download.status).toBe(200);
+    expect(download.headers.get("content-type")).toContain("image/png");
+    const bytes = new Uint8Array(await download.arrayBuffer());
+    expect(bytes.length).toBeGreaterThan(0);
+    expect(Array.from(bytes.slice(0, 4))).toEqual([0x89, 0x50, 0x4e, 0x47]);
+  });
+
   it("proxies a credit balance", async () => {
     stub = await createOpenRouterStub();
     const res = await fetch(`${stub.baseUrl}/api/v1/credits`);
