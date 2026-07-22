@@ -1028,7 +1028,7 @@ steps. Minted fresh per run, never persisted (§2.3).
      streaming and delivers base64 audio in SSE `delta.audio.data` chunks) —
      that path is built for conversational voice replies, not batch
      narration synthesis. Speech model discovery:
-     `GET /api/v1/models?output_modalities=speech`.
+     `GET /api/v1/models?output_modalities=audio`.
    - **Music:** same step shape; OpenRouter exposes music-generation-capable
      models, but the concrete model/endpoint is resolved at implementation
      time via model discovery — not assumed here.
