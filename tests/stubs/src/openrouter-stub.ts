@@ -53,6 +53,12 @@ export function createOpenRouterStub(
   // the exact §6d sequences (503-then-200 retry, malformed-then-valid repair). Empty queue ⇒
   // the default {stub:true} behavior (the task-29 providers e2e is unaffected).
   const chatScript: Array<{ status: number; body?: unknown }> = [];
+  // Task #33: a PROGRAMMABLE speech-response queue (set via POST /__admin/speech-script). Each
+  // /api/v1/audio/speech call shifts one entry — a non-2xx `status` drives a provider MEDIA_RETRY
+  // (the generateAudio "failure mid-stream retries cleanly" e2e). Empty queue ⇒ the default 200
+  // raw-mp3 behavior, so narration/music happy paths are unaffected. Music reuses this same
+  // endpoint (decision D2), so both audio kinds share it and the speechRequests counter.
+  const speechScript: Array<{ status: number }> = [];
 
   const statusFor = (job: VideoJob): string => {
     if (job.pollCount >= job.pollsToComplete) return "completed";
@@ -139,8 +145,27 @@ export function createOpenRouterStub(
       });
     }),
 
+    // Task #33: program the next N speech responses (shifted one per speech call). A
+    // non-2xx entry makes /api/v1/audio/speech fail (→ MEDIA_RETRY); an empty queue ⇒ 200 mp3.
+    route("POST", "/__admin/speech-script", (ctx) => {
+      const body = ctx.json<{ responses?: Array<{ status: number }> }>() ?? {};
+      speechScript.length = 0;
+      if (Array.isArray(body.responses)) speechScript.push(...body.responses);
+      ctx.send(200, { ok: true, queued: speechScript.length });
+    }),
+
+    // Raw-byte-stream TTS (design-delta §7 workflow 7): audio/mpeg body + X-Generation-Id
+    // header, NOT JSON. narration AND music both hit this endpoint (decision D2 — music reuses
+    // the OpenAI-Audio-Speech contract with a music model). Honors the programmable
+    // speech-script queue so a test can drive a 503-then-200 retry sequence.
     route("POST", "/api/v1/audio/speech", (ctx) => {
       state.speechRequests += 1;
+      const scripted = speechScript.shift();
+      if (scripted && scripted.status >= 400) {
+        return ctx.send(scripted.status, {
+          error: { message: `scripted status ${scripted.status}` },
+        });
+      }
       ctx.sendRaw(200, FAKE_MP3, {
         "content-type": "audio/mpeg",
         "x-generation-id": `gen_stub_${state.speechRequests}`,
@@ -259,6 +284,7 @@ export function createOpenRouterStub(
         jobs.clear();
         idempotency.clear();
         chatScript.length = 0;
+        speechScript.length = 0;
       },
     },
     options,

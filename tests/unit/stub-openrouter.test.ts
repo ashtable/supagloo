@@ -158,6 +158,34 @@ describe("openrouter stub", () => {
     expect(bytes.length).toBeGreaterThan(0);
   });
 
+  it("shifts a programmed speech-script per call — a non-2xx drives a retry (Task #33)", async () => {
+    stub = await createOpenRouterStub();
+    const program = await fetch(`${stub.baseUrl}/__admin/speech-script`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ responses: [{ status: 503 }] }),
+    });
+    expect(program.status).toBe(200);
+
+    // First call honors the scripted 503 (transient → MEDIA_RETRY in the workflow).
+    const first = await fetch(`${stub.baseUrl}/api/v1/audio/speech`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "stub/speech-model", input: "x" }),
+    });
+    expect(first.status).toBe(503);
+
+    // Second call (empty queue) falls back to the default 200 raw-mp3 response.
+    const second = await fetch(`${stub.baseUrl}/api/v1/audio/speech`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "stub/speech-model", input: "x" }),
+    });
+    expect(second.status).toBe(200);
+    expect(second.headers.get("content-type")).toContain("audio/mpeg");
+    expect(stub.calls().state.speechRequests).toBe(2);
+  });
+
   it("generates an image URL + serves the bytes (Task #32)", async () => {
     stub = await createOpenRouterStub();
     const res = await fetch(`${stub.baseUrl}/api/v1/images/generations`, {
