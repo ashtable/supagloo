@@ -8,8 +8,11 @@ metadata:
 Built 2026-07-21 (plan task 30) — the FIRST `ai-generation`-queue workflow, on top of the
 task-29 provider layer ([[provider-call-layer-built]]). Plan doc:
 `supagloo/scratch/task-30-generate-script-workflow.md`. Design authority: design-delta §7
-workflow 5, §6d diagram (d), §9-Q10, §2.8/§2.11. All GREEN in-process (db-lib symlink repoint,
-see [[in-flight-dblib-e2e-constraint]] DBOS-repo variant).
+workflow 5, §6d diagram (d), §9-Q10, §2.8/§2.11. All GREEN against the real, released,
+submodule-pinned database-lib (`e6e1de4`) — an initial pass used a local symlink override
+to fake this and was WRONG; see [[in-flight-dblib-e2e-constraint]]'s 2026-07-22 correction
+for the actual required sequence (release db-lib → bump+rebuild the submodule → sync the
+Dockerfile ARG → only then test).
 
 **Shape.** `src/workflows/generate-script.ts` registers `generateScript` (queue
 `ai-generation`) — handles BOTH text kinds (`storyboard`→`GeneratedStoryboardSchema`,
