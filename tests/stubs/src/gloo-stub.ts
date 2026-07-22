@@ -55,18 +55,37 @@ export function createGlooStub(
       });
     }),
 
-    route("POST", "/ai/v2/chat-completions", (ctx) => {
+    // Gloo's OpenAI-compatible chat-completions surface. The REAL path is
+    // `/ai/v2/chat/completions` (slash) — the exact endpoint the AI SDK's
+    // `createOpenAI({ baseURL: ".../ai/v2" }).chat()` targets and that Gloo honors
+    // for structured output (verified against the live API — supagloo-nextjs
+    // CLAUDE.md "LLM Provider: Gloo AI Studio"). When the caller requests
+    // `response_format: { type: "json_schema" }` (what generateObject emits) we
+    // return schema-shaped JSON so a real generateObject round-trip parses; otherwise
+    // a plain-prose completion. Mirrors the openrouter-stub chat handler.
+    route("POST", "/ai/v2/chat/completions", (ctx) => {
       const auth = ctx.header("authorization");
       if (!auth || !/^Bearer\s+gloo_/.test(auth)) {
         return ctx.send(401, { error: "unauthorized" });
       }
+      const body =
+        ctx.json<{
+          model?: string;
+          response_format?: { type?: string };
+        }>() ?? {};
       state.chatCompletions += 1;
+      const content =
+        body.response_format?.type === "json_schema"
+          ? JSON.stringify({ stub: true })
+          : "Stubbed Gloo completion.";
       ctx.send(200, {
         id: `gloo_chatcmpl_${state.chatCompletions}`,
+        object: "chat.completion",
+        model: body.model ?? "gloo-stub-model",
         choices: [
           {
             index: 0,
-            message: { role: "assistant", content: "Stubbed Gloo completion." },
+            message: { role: "assistant", content },
             finish_reason: "stop",
           },
         ],

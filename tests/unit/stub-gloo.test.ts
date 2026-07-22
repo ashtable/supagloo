@@ -63,7 +63,7 @@ describe("gloo stub", () => {
 
   it("serves chat-completions only with a bearer token", async () => {
     stub = await createGlooStub();
-    const url = `${stub.baseUrl}/ai/v2/chat-completions`;
+    const url = `${stub.baseUrl}/ai/v2/chat/completions`;
 
     const unauthed = await fetch(url, {
       method: "POST",
@@ -83,5 +83,27 @@ describe("gloo stub", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.choices[0].message.content).toBeTypeOf("string");
+  });
+
+  it("returns schema-shaped JSON content for a json_schema request (generateObject path)", async () => {
+    stub = await createGlooStub();
+    // What the AI SDK's `createOpenAI(...).chat()` emits for generateObject: Gloo
+    // honors `response_format: { type: "json_schema" }` on the /ai/v2/chat/completions
+    // surface, so the stub returns parseable JSON (not prose) for that request.
+    const res = await fetch(`${stub.baseUrl}/ai/v2/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer gloo_stub_1",
+      },
+      body: JSON.stringify({
+        model: "gloo-stub-model",
+        response_format: { type: "json_schema" },
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const content = (await res.json()).choices[0].message.content;
+    expect(() => JSON.parse(content)).not.toThrow();
   });
 });

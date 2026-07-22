@@ -111,4 +111,28 @@ describe("openrouter stub", () => {
     expect(res.status).toBe(200);
     expect((await res.json()).data.total_credits).toBeTypeOf("number");
   });
+
+  it("filters model discovery by output_modalities (ids resolved, never hardcoded)", async () => {
+    stub = await createOpenRouterStub();
+
+    const all = await fetch(`${stub.baseUrl}/api/v1/models`);
+    expect((await all.json()).data.map((m: { id: string }) => m.id)).toEqual([
+      "stub/text-model",
+      "stub/speech-model",
+    ]);
+
+    const text = await fetch(
+      `${stub.baseUrl}/api/v1/models?output_modalities=text`,
+    );
+    expect((await text.json()).data.map((m: { id: string }) => m.id)).toEqual([
+      "stub/text-model",
+    ]);
+
+    const audio = await fetch(
+      `${stub.baseUrl}/api/v1/models?output_modalities=audio`,
+    );
+    expect((await audio.json()).data.map((m: { id: string }) => m.id)).toEqual([
+      "stub/speech-model",
+    ]);
+  });
 });

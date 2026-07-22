@@ -20,7 +20,7 @@ describe("e2e: gloo stub (containerized)", () => {
     const { access_token } = await token.json();
     expect(access_token).toMatch(/^gloo_/);
 
-    const chat = await fetch(`${BASE}/ai/v2/chat-completions`, {
+    const chat = await fetch(`${BASE}/ai/v2/chat/completions`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -33,7 +33,7 @@ describe("e2e: gloo stub (containerized)", () => {
   });
 
   it("rejects chat-completions without a bearer token", async () => {
-    const res = await fetch(`${BASE}/ai/v2/chat-completions`, {
+    const res = await fetch(`${BASE}/ai/v2/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ messages: [] }),
