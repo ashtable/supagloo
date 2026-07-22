@@ -159,10 +159,27 @@ export function createOpenRouterStub(
       ctx.send(200, { id: job.id, status: statusFor(job) });
     }),
 
+    // Model discovery (design-delta §7). Real OpenRouter filters by
+    // `output_modalities`; the DBOS provider layer (task #29) resolves ids by
+    // modality at call time, so the stub carries per-model `output_modalities` and
+    // filters when the query param is present (comma-separated ⇒ ANY-overlap). No
+    // param ⇒ the full catalogue. Keeps model ids resolvable-not-hardcoded end to end.
     route("GET", "/api/v1/models", (ctx) => {
-      ctx.send(200, {
-        data: [{ id: "stub/text-model" }, { id: "stub/speech-model" }],
-      });
+      const catalogue = [
+        { id: "stub/text-model", output_modalities: ["text"] },
+        { id: "stub/speech-model", output_modalities: ["audio"] },
+      ];
+      const requested = (ctx.url.searchParams.get("output_modalities") ?? "")
+        .split(",")
+        .map((m) => m.trim())
+        .filter(Boolean);
+      const data =
+        requested.length === 0
+          ? catalogue
+          : catalogue.filter((m) =>
+              m.output_modalities.some((mod) => requested.includes(mod)),
+            );
+      ctx.send(200, { data });
     }),
   ];
 
