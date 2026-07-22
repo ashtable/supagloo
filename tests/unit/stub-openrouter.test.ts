@@ -91,6 +91,59 @@ describe("openrouter stub", () => {
     expect(calls.state.videoJobsCreated).toBe(1);
   });
 
+  it("json_schema chat completions default to {stub:true} when no script is programmed", async () => {
+    stub = await createOpenRouterStub();
+    const res = await fetch(`${stub.baseUrl}/api/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "stub/text-model",
+        response_format: { type: "json_schema" },
+      }),
+    });
+    expect(JSON.parse((await res.json()).choices[0].message.content)).toEqual({
+      stub: true,
+    });
+  });
+
+  it("shifts a programmed chat-script per call (Task #30 — drives retry/repair sequences)", async () => {
+    stub = await createOpenRouterStub();
+    const program = await fetch(`${stub.baseUrl}/__admin/chat-script`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        responses: [
+          { status: 503 },
+          { status: 200, body: { scenes: [{ name: "s1" }] } },
+        ],
+      }),
+    });
+    expect((await program.json()).queued).toBe(2);
+
+    const chat = () =>
+      fetch(`${stub.baseUrl}/api/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ response_format: { type: "json_schema" } }),
+      });
+
+    const first = await chat();
+    expect(first.status).toBe(503); // a transient failure the DBOS step retries
+
+    const second = await chat();
+    expect(second.status).toBe(200);
+    expect(JSON.parse((await second.json()).choices[0].message.content)).toEqual({
+      scenes: [{ name: "s1" }],
+    });
+
+    // Every chat call counts (including the scripted 503), and the queue is drained.
+    expect(stub.calls().state.chatCompletions).toBe(2);
+    const third = await chat();
+    expect(JSON.parse((await third.json()).choices[0].message.content)).toEqual({
+      stub: true,
+    });
+  });
+
   it("returns raw audio bytes for TTS, not JSON", async () => {
     stub = await createOpenRouterStub();
     const res = await fetch(`${stub.baseUrl}/api/v1/audio/speech`, {

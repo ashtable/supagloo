@@ -44,6 +44,12 @@ export function createOpenRouterStub(
   };
   const jobs = new Map<string, VideoJob>();
   const idempotency = new Map<string, string>();
+  // Task #30: a PROGRAMMABLE chat-response queue (set via POST /__admin/chat-script). Each
+  // /api/v1/chat/completions call shifts one entry — a non-2xx `status` drives a provider
+  // step retry, a 2xx `body` becomes the `message.content` (JSON string) so a test can drive
+  // the exact §6d sequences (503-then-200 retry, malformed-then-valid repair). Empty queue ⇒
+  // the default {stub:true} behavior (the task-29 providers e2e is unaffected).
+  const chatScript: Array<{ status: number; body?: unknown }> = [];
 
   const statusFor = (job: VideoJob): string => {
     if (job.pollCount >= job.pollsToComplete) return "completed";
@@ -68,6 +74,14 @@ export function createOpenRouterStub(
       ctx.send(200, { data: { total_credits: 100, total_usage: 12.5 } });
     }),
 
+    // Task #30: program the next N chat responses (shifted one per chat call).
+    route("POST", "/__admin/chat-script", (ctx) => {
+      const body = ctx.json<{ responses?: Array<{ status: number; body?: unknown }> }>() ?? {};
+      chatScript.length = 0;
+      if (Array.isArray(body.responses)) chatScript.push(...body.responses);
+      ctx.send(200, { ok: true, queued: chatScript.length });
+    }),
+
     route("POST", "/api/v1/chat/completions", (ctx) => {
       const body =
         ctx.json<{
@@ -75,6 +89,34 @@ export function createOpenRouterStub(
           response_format?: { type?: string };
         }>() ?? {};
       state.chatCompletions += 1;
+
+      // If a response is scripted, honor it (drives retry / repair sequences).
+      const scripted = chatScript.shift();
+      if (scripted) {
+        if (scripted.status >= 400) {
+          return ctx.send(scripted.status, {
+            error: { message: `scripted status ${scripted.status}` },
+          });
+        }
+        const scriptedContent =
+          typeof scripted.body === "string"
+            ? scripted.body
+            : JSON.stringify(scripted.body ?? {});
+        return ctx.send(scripted.status, {
+          id: `chatcmpl_${state.chatCompletions}`,
+          object: "chat.completion",
+          model: body.model ?? "stub/text-model",
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: scriptedContent },
+              finish_reason: "stop",
+            },
+          ],
+          usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+        });
+      }
+
       const content =
         body.response_format?.type === "json_schema"
           ? JSON.stringify({ stub: true })
@@ -195,6 +237,7 @@ export function createOpenRouterStub(
         state.videoJobsCreated = 0;
         jobs.clear();
         idempotency.clear();
+        chatScript.length = 0;
       },
     },
     options,

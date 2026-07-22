@@ -69,3 +69,29 @@ postinstall lifecycle fails — and it also validates the Prisma pin, so make it
 in-process API e2e (which still hits the REAL containerized stub over HTTP) + the
 root IN-PROCESS unit tests (`tests/unit/stub-*.test.ts`). Tasks 11/17+ adding
 db-lib DTOs should copy this pattern.
+
+**DBOS-repo variant (task 30, 2026-07-21) — same constraint, sanctioned technique for
+this repo.** `supagloo-nodejs-dbos` consumes db-lib the same way:
+`node_modules/@supagloo/database-lib` symlinks to its OWN nested submodule checkout
+`supagloo-nodejs-dbos/supagloo-database-lib` (pinned SHA, prebuilt `dist/`, NO
+node_modules so it can't `npm run build` in place). The sibling
+`~/code/supagloo-database-lib` (the repo the task instructs you to edit) was at the
+EXACT pinned SHA + your uncommitted edits — diff was only the touched source files.
+Task-30 workflow: edit the sibling → `npm run build` it (has its own toolchain) → run
+the dbos e2e IN-PROCESS via `launchDbos()` (real DBOS launch + `DBOSClient.enqueue`),
+which resolves db-lib through that symlink.
+- **Never write into any path under a submodule checkout, including gitignored build
+  output like `dist/`.** The submodule directory tree is off limits for direct writes,
+  full stop, per the standing project rule against editing submodule copies — this
+  supersedes the "copy dist into the submodule's own `dist/`" technique described above
+  for the API repo; prefer the symlink technique below there too, going forward.
+- **Standard technique: repoint the gitignored node_modules symlink at the sibling
+  repo.** `ln -sfn ~/code/supagloo-database-lib
+  ~/code/supagloo-nodejs-dbos/node_modules/@supagloo/database-lib`. Now dbos resolves
+  the sibling's built `dist/` (with the new exports) directly — "import db-lib via its
+  file:/workspace dependency" pointed at the sibling working copy. Non-destructive,
+  reversible, touches no submodule; a `npm install` would revert it (fine — the later
+  submodule-bump step supersedes it anyway). No exec-bit gotcha since you're not
+  copying dist. App-DB schema for the e2e: run `prisma migrate deploy` from the sibling
+  db-lib against the compose postgres (or reuse the persisted `pgdata` volume — task 30
+  found it already migrated). Purely-Zod db-lib additions need NO new migration.
