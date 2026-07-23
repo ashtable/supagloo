@@ -38,6 +38,25 @@ approval of that plan:
   across a crash between submit and poll-completion).
 - **Slow render e2e** (real `@remotion/renderer`) runs in a tagged heavy
   lane, not on every push; the never-merge-red rule still applies to the lane.
+- **Stub coupling runs deeper than base URLs** (verified 2026-07-22 against
+  the code — matters for the §10 real-provider migration): the e2e **bodies**
+  depend on stub-only constructs that do NOT exist on real hosts —
+  (1) `/__stub/calls` call-count assertions (`stubState`/`stubCalls`:
+  `chatCompletions`, `tokensIssued`, `videoJobsCreated`) in
+  `providers.e2e.ts`, `generate-video.e2e.ts` (incl. its cancel/resume tests,
+  not only crash/replay), and api `connections.e2e.ts` (OpenRouter-credits +
+  Gloo-verify); (2) `/__stub/reset`; and (3) `/__admin/chat-script` +
+  `/__admin/speech-script` deterministic-response **programming** for HAPPY
+  paths — in `generate-script.e2e.ts` and, crucially, in dbos
+  `tests/e2e/global-setup.ts` (~lines 145-166). Flipping specs to real hosts
+  requires reworking these bodies (delete `/__admin/*` programming, convert
+  exact-content assertions to schema-valid/structural, replace `/__stub/calls`
+  counters with DBOS system-DB introspection or drop them) — not just swapping
+  URLs. DBOS v4.23.6 exposes `DBOS.listWorkflowSteps(workflowID)` (StepInfo
+  with `name`=function_name) for the §10.5 exactly-once step-count proof.
+  `generateScriptWorkflow` supports **both** `openrouter` and `gloo` providers,
+  but no dbos e2e currently exercises `provider: "gloo"` (only
+  `providers.e2e.ts` covers real Gloo `.chat()` at the primitive level).
 
 Open sign-off item recorded in plan §6: whether `mintInstallationToken`
 lives in `database-lib` (shared, recommended) or is duplicated per service
