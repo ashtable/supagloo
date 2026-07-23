@@ -1,6 +1,6 @@
 ---
 name: e2e-test-infra-conventions
-description: Plan-level e2e conventions (2026-07-17, docs/plan.md) — provider-stub harness with env-overridable base URLs + local git smart-HTTP server; flag-gated /v1/test/seed built early; Stagehand real-stack mode via seed; DBOS crash/replay tests standard
+description: Plan-level e2e conventions (2026-07-17, docs/plan.md; provider-stub posture superseded 2026-07-22 for OpenRouter/Gloo/YouVersion by design-delta §10) — real-provider gating e2e for those three, GitHub still stubbed; flag-gated /v1/test/seed built early; Stagehand real-stack mode via seed; DBOS crash/replay tests standard
 metadata:
   type: convention
 ---
@@ -12,8 +12,15 @@ approval of that plan:
   (GitHub API, OpenRouter, Gloo, YouVersion) are env-overridable; e2e points
   them at stub HTTP servers with call-count assertions, plus a **local git
   smart-HTTP server** so clone/push/PR-merge flows in git-ops workflows run
-  against real git. Live-provider tests are manual/optional, never gating.
-  Stubs never ship in production images.
+  against real git. Stubs never ship in production images.
+  **SUPERSEDED 2026-07-22 for OpenRouter/Gloo/YouVersion** (design-delta §10,
+  signed off; plan tasks 34-E1–34-E8): e2e for those three always hits the
+  **real provider APIs** and *is* the gating suite — the three stubs get
+  deleted; failure injection (503/repair/timing) moves to injected-fetch
+  unit tests; real secrets from `.env` fail e2e setup fast when missing.
+  **GitHub stays stubbed** (github-stub + git-server untouched, out of scope).
+  Sole exception: interactive browser logins (YouVersion OAuth, OpenRouter
+  PKCE page) — UI specs may shim only that hop.
 - **`POST /v1/test/seed`** (flag-gated, `NODE_ENV !== 'production'`, per
   design-delta §9-Q9) is built *early* (M2, with auth) because nearly all
   later e2e depends on deterministic users/sessions — deliberately not left
