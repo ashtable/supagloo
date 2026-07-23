@@ -1,423 +1,515 @@
 # Supagloo — Current System Design
 
-*Generated 2026-07-17. Describes the system AS IT EXISTS TODAY in the code, not the intended end state.*
+*Generated 2026-07-17; wholesale refresh 2026-07-22. Describes the system AS IT
+EXISTS TODAY in the code, not the intended end state.*
 
 ## 1. Overview
 
-Supagloo is meant to be a Scripture-based video generator/editor: sign in with
-YouVersion, connect GitHub / OpenRouter / Gloo AI Studio, describe or pick a
-verse, and get a storyboarded, narrated, scored short video you can edit and
-publish. The intended architecture is a Next.js UI backed by a Node.js CRUD
-API, a DBOS durable-execution layer for long-running AI/render jobs, and a
-shared Prisma/Zod database library — all orchestrated locally via Docker
-Compose and deployed to Railway.
+Supagloo is a Scripture-based video generator/editor: sign in with YouVersion,
+connect GitHub / OpenRouter / Gloo AI Studio, describe or pick a passage, and
+get a storyboarded, narrated, scored short video you can edit and publish. The
+architecture is a Next.js UI (with a BFF layer) backed by a Node.js CRUD API, a
+DBOS durable-execution worker for long-running git-ops/AI jobs, and a shared
+Prisma/Zod database library — orchestrated locally via Docker Compose and
+deployed to Railway.
 
-**Maturity today: a single, richly-built, entirely frontend-mocked prototype.**
+**Maturity today: a real, working full-stack system through AI generation;
+rendering and the gallery are not built yet.** Per `docs/plan.md`'s task table,
+tasks 1–34 (milestones M1–M5's backend, and M4's UI wiring) are done; tasks
+35–54 are not.
 
-- `supagloo-nextjs` is a real, deployed (https://supagloo.com/) Next.js 16 app
-  with a large, well-tested UI: landing page, real YouVersion sign-in, an
-  onboarding wizard, a workspace, a project wizard, and a Remotion-preview
-  video studio.
-- Every *data* behavior behind that UI — connecting GitHub/OpenRouter/Gloo,
-  creating/importing projects, editing a storyboard, committing, publishing,
-  rendering — is a **pure client-side mock**: in-memory reducers, `setTimeout`
-  fake latency, and one hardcoded demo storyboard. There are no API routes, no
-  database, no queue, no render pipeline.
-- `supagloo-database-lib`, `supagloo-nodejs-api`, and `supagloo-nodejs-dbos`
-  are **empty scaffolding** — repos with only a README/LICENSE/`.claude`
-  config and submodule wiring, no source code.
-- `supagloo` (this repo) wires the submodules together and runs only the
-  Next.js container via Docker Compose; the API and DBOS services are not
-  wired into Compose because they don't have anything to run yet.
-- `supagloo-prompts` holds the Claude Code slash-command workflow
-  (`/code`, `/design`) and subagent definitions (`tech-lead`,
-  `fabulous-tech-lead`) that drive development across all repos — it's
-  process tooling, not application code.
+What is REAL and working end to end today:
+
+- **Infra**: Compose runs Postgres 17 (two logical DBs: `supagloo` app +
+  `supagloo_dbos` system), MinIO (S3 parity), a one-shot Prisma `migrate`
+  service, the Fastify API, the DBOS worker, and the Next.js app — 7 services.
+- **Database**: a full Prisma schema + migrations in `supagloo-database-lib`
+  (User/Session/connections/Project/ProjectVersion/RenderJob/AiGeneration/
+  GalleryItem/GalleryUpvote/ProjectJob), plus shared Zod schemas, AES-256-GCM
+  secret crypto, GitHub App JWT helpers, S3 key helpers, and a CI-checkable
+  exact Prisma-version pin.
+- **API**: real auth/sessions (opaque DB-backed tokens, SHA-256 at rest),
+  GitHub App / OpenRouter / Gloo connections (secrets encrypted at rest),
+  projects/versions CRUD, manifest read, job creation + polling, S3 presigned
+  downloads, and the 4 AI-generation endpoints.
+- **DBOS worker**: all four git-ops workflows (scaffold / import / commit /
+  publish — real clone/push/PR/merge/tag against git), all four AI-generation
+  workflows (script/storyboard, image, audio narration+music, video with
+  durable submit-then-poll), and a Remotion template/manifest→code generator.
+- **UI**: sign-in/session, onboarding, all three connect flows, workspace +
+  project wizards, studio hydration from the real manifest, commit, publish,
+  and version history are wired to the real backend (a flag-gated mock mode
+  remains for pure-UI tests).
+
+What is genuinely NOT built yet (see §6): the render pipeline/API/UI, the
+gallery, the studio's AI-generation controls (the backend endpoints exist; the
+UI doesn't call them), the cleanup workflow, prod deploy wiring for api/dbos,
+CI of any kind, and a set of code-review-surfaced hardening follow-ups.
 
 ## 2. Repo Inventory
 
 ### 2.1 `supagloo-prompts` — shared prompts library (submodule everywhere)
 
 - Git submodule embedded in `supagloo`, `supagloo-nextjs`,
-  `supagloo-database-lib`, `supagloo-nodejs-api`, `supagloo-nodejs-dbos`.
-- `code.md` — the **`/code` workflow**: an 18-step gated pipeline (spawn
-  subagents to gather current-design/design-delta/plan context in parallel →
-  tech-lead plans TDD → tech-lead writes failing tests → user approval gate →
-  tech-lead implements → revision-review loop → mark task done in
-  `docs/plan.md` → open/merge PRs per changed repo in dependency order,
-  triggering Railway deploys).
-- `design.md` — the **`/design` workflow**: this is the 10-step process this
-  very task is Step 1 of (current-design → Claude-Design-project pull →
-  design-delta → commit → plan.md → revision-review loop → commit).
-- `recode.md`, `redesign.md` — **empty files** (0 bytes); presumably
-  placeholders for re-entrant variants of the above, not yet written.
-- `.claude/agents/tech-lead.md`, `fabulous-tech-lead.md` — hands-on
-  architect/coder subagent personas (Opus vs. a faster engine) shared across
-  repos via a memory store.
-- `.claude/commands/release.md` — a `/release` slash command.
+  `supagloo-nodejs-api`, `supagloo-nodejs-dbos`, `supagloo-database-lib`.
+- Workflow prompts: `design.md` (the `/design` process this doc is maintained
+  by), `designtocode.md` (design→implementation), `fix-code.md`, `redesign.md`
+  (re-entrant design; now a real prompt, no longer an empty placeholder).
+- `.claude/agents/` — `tech-lead.md` / `fabulous-tech-lead.md` personas plus
+  the shared `tech-lead-memory/` store used across repos.
+- `.claude/commands/release.md` — the `/release` slash command.
+- Dev-time process tooling only; never runs in any deployed service.
 
-### 2.2 `supagloo` — Docker Compose orchestration root (this repo)
+### 2.2 `supagloo` — Compose orchestration root + shared e2e harness (this repo)
 
-- Pure orchestration repo: no application code of its own.
-- `.gitmodules` wires in four submodules: `supagloo-nextjs`,
+- `.gitmodules` wires four submodules: `supagloo-nextjs`,
   `supagloo-nodejs-api`, `supagloo-nodejs-dbos`, `supagloo-prompts`.
-- `docker-compose.yml` defines **one service**: `nextjs`, building
-  `./supagloo-nextjs/Dockerfile` and mapping host `8000` → container `3000`.
-  The API and DBOS services are **not** defined in Compose at all yet — the
-  README explicitly says so.
-- `docs/` existed but was empty prior to this task (this file is the first
-  doc written into it).
-- `README.md` accurately describes the intended 3-app architecture
-  (UI → API → DBOS) but that data flow does not exist in code yet (see §4/§5).
+  (`supagloo-database-lib` is NOT a root submodule — it is nested inside the
+  api and dbos repos, which consume it as a `file:` dependency.)
+- `docker-compose.yml` defines **seven services**:
+  - `postgres` (postgres:17-alpine) — `infra/pg-init` creates both logical
+    DBs: `supagloo` (app) and `supagloo_dbos` (DBOS system).
+  - `minio` + one-shot `minio-init` (creates the `supagloo-dev` bucket).
+  - one-shot `migrate` — runs `prisma migrate deploy` from the api image
+    (db-lib's schema/migrations ship inside it); `api` and `dbos` wait on it.
+  - `api` (Fastify, host :4000) and `dbos` (worker, **no ports** — work
+    arrives only via DBOSClient enqueue against the system DB). Both require
+    the same `SECRETS_ENCRYPTION_KEY` (64-hex; decryption fails if they
+    drift) and share S3 config with dual endpoints (`S3_ENDPOINT` internal,
+    `S3_PUBLIC_ENDPOINT` for host-consumable presigned URLs).
+  - `nextjs` (host 8000 → container 3000).
+- `docker-compose.test.yml` — an **explicit-`-f`-only** test overlay adding
+  the five provider-stub services and pointing the `api` service's provider
+  base URLs at them (see §5). Never merged into a plain `docker compose up`.
+- A gitignored `docker-compose.override.yml` redirects api/dbos build contexts
+  at sibling checkouts to build in-flight code before submodule bumps.
+- Root test harness: `tests/{unit,e2e,stubs,support}` + split Vitest configs —
+  stack smoke tests, the stub-harness self-tests, and the stub server sources.
+- `docs/` — this file, `design-delta.md`, `plan.md`, review artifacts.
 
-### 2.3 `supagloo-database-lib` — Prisma & Zod types (intended)
+### 2.3 `supagloo-database-lib` — shared Prisma + Zod library (real)
 
-- **Effectively empty scaffolding.** Contents: `README.md` (one line),
-  `LICENSE`, `.claude/agents`, `.claude/commands`, `.gitignore`, `docs/`
-  (empty), and a `supagloo-prompts` submodule.
-- No `package.json`, no `prisma/schema.prisma`, no source directory, no
-  migrations, no exported types of any kind.
-- Also embedded as a nested submodule inside `supagloo-nodejs-api` and
-  `supagloo-nodejs-dbos` (same empty state there).
+Consumed as a nested submodule + `file:` dependency by api and dbos.
 
-### 2.4 `supagloo-nextjs` — Next.js UI (the fleshed-out project)
+- `prisma/schema.prisma` + migrations: `User`, `Session`, `GithubConnection`
+  (stores `installationId` only — never a token), `OpenRouterConnection` /
+  `GlooConnection` (1:0..1 per user, ciphertext secret columns), `Project`
+  (composite unique `(ownerId, slug)`, soft delete), `ProjectVersion`,
+  `RenderJob`, `AiGeneration` (incl. `providerJobId`), `GalleryItem`,
+  `GalleryUpvote`, `ProjectJob` (staged git-ops jobs), plus status/kind enums.
+- `src/`: AES-256-GCM `encryptSecret`/`decryptSecret`; domain Zod schemas
+  (`ProjectManifestSchema` — translation is a free string, any
+  YouVersion-licensed translation, KJV/BSB as defaults; storyboard/spec
+  schemas; all API wire DTOs); GitHub App JWT signing +
+  `mintInstallationToken`; S3 key-layout helpers; real-semver helpers; the
+  ProjectJob stage catalogue; the API↔DBOS workflow-name/queue contract; and
+  the exported `PRISMA_VERSION` pin + `check-prisma-version` CLI (consumers
+  must pin the exact Prisma version; CI enforcement itself is task 44, not
+  done).
+- No render/gallery-specific logic yet beyond the schema rows.
 
-**Stack**: Next.js 16.2 (App Router), React 19, Tailwind CSS 4, TypeScript,
-Vitest (unit + e2e), Stagehand v3 (AI-driven E2E browser testing).
-Dependencies of note: `@youversion/platform-core` /
-`@youversion/platform-react-ui` (real YouVersion auth SDK), `@remotion/player`
-+ `remotion` (client-side video **preview** only — no `@remotion/renderer`,
-`@remotion/lambda`, or `@remotion/cli`), `@ai-sdk/openai` + `@browserbasehq/stagehand`
-(used only to drive Gloo-backed LLM calls for E2E test automation, not by the
-running app).
+### 2.4 `supagloo-nextjs` — Next.js UI + BFF (wired to the real backend)
 
-`CLAUDE.md`/`AGENTS.md` are almost entirely **Stagehand testing framework
-docs** (how to init Stagehand, wire Gloo AI Studio as its LLM backend via
-OAuth2 client-credentials, use `act`/`extract`/`observe`/`agent`) plus a short
-Next.js 16 "read the docs, don't trust training data" note — they are not a
-project architecture overview.
+**Stack**: Next.js 16.2 (App Router), React 19, Tailwind 4, TypeScript,
+Vitest, Stagehand v3 (AI-driven browser e2e), `@remotion/player` (preview
+only), `@youversion/platform-react-ui` (real YouVersion OAuth sign-in).
 
-**Pages/flows that exist** (`app/`):
-- `/` (`app/page.tsx`) — branches at render time (via `HomeSwitch`, a client
-  component) between `PublicLanding` (signed-out, SSR'd for SEO) and
-  `WorkspaceHome` (signed-in). No server-side session check — the branch is
-  entirely client-resolved after mount.
-- `/profile` — connections/profile page; redirects to `/` if not signed in or
-  mid-first-onboarding.
-- `/studio` and `/studio/[id]` — the video editor (storyboard tree, scene
-  inspector, timeline, player panel via `@remotion/player`, top bar with
-  Commit/Publish/version-history/render menus).
-- Onboarding: a 5-step first-sign-in wizard (`welcome → github → openrouter →
-  gloo → done`) that overlays the workspace once, gated by a `hasOnboarded`
-  flag.
-- Project creation: "New project" wizard (create-new-repo / use-existing-empty-repo
-  tabs) and "Import repo" wizard, both driving a fake provisioning/verification
-  log then landing in `/studio/[id]`.
-- Connect flows/modals for GitHub, OpenRouter, and Gloo AI (client-secret
-  paste form).
+**BFF layer (real API routes now exist)** — `app/api/**/route.ts`:
+`auth/session` (verifies the YouVersion token with the API, sets an httpOnly
+session cookie), a generic bearer-forwarding proxy to the API, `me`,
+`connections`, `connect/{github,openrouter,gloo}` (+ callbacks), `github`
+(repo listing), `projects` (create / create-repo JIT user-auth hop / import /
+`[id]` manifest·commit·publish·jobs·versions), and a double-gated `test` seam.
 
-**No API routes exist** (`app/**/route.ts` — none found) and **no
-middleware/proxy** — confirmed by search. All "backend" behavior is
-client-side.
+**Flows wired to the real stack**: sign-in → server session (no more
+client-only session; onboarding state is server-driven, `localStorage` flag
+retired); GitHub App install (popup + poll); OpenRouter browser-side PKCE →
+key POST; Gloo save-&-verify form with live error surfacing; profile page with
+masked key + live credits; workspace project grid, create/import wizards with
+a provisioning log rendered from polled real `ProjectJob.stages`;
+create-new-repo's JIT GitHub user-auth redirect; studio hydration from
+`GET /v1/projects/:id` + Zod-parsed manifest (bidirectional
+manifest⇄storyboard adapter); commit → real `POST …/commit` + job polling;
+publish wizard → real `POST …/publish` with stage polling; version-history
+dropdown from `GET …/versions`.
 
-**Auth/session mechanism actually wired up**:
-- Real integration: `@youversion/platform-react-ui`'s `YouVersionProvider`
-  (`app/providers.tsx`) + `useYVAuth()` hook drive real YouVersion OAuth
-  sign-in (`signIn({ scopes: ["profile","email"] })` in `sign-in-button.tsx`).
-  Requires `YV_APP_KEY` (throws at layout render if unset) and
-  `NEXT_PUBLIC_YV_AUTH_REDIRECT_URL`.
-- Session state (`lib/session/session-model.ts`, `session-provider.tsx`) is
-  derived **entirely client-side** from `useYVAuth()` — there is no server
-  session, no cookie, no JWT issued by Supagloo itself.
-- "Has onboarded" is a `localStorage` stopgap keyed by YouVersion user id
-  (`onboardingStorageKey`), not persisted server-side.
-- A flag-gated **mock-session seam** exists purely for Stagehand E2E testing:
-  when `NEXT_PUBLIC_SUPAGLOO_DEMO === "1"`, a `?mock=<scenario>` query param
-  forces a deterministic signed-in session (`authed-fresh` /
-  `authed-returning` / `authed-unlinked`) with a canned demo user, bypassing
-  real OAuth (which Stagehand can't complete). Hard no-op when the flag is
-  unset (prod).
+**Still mocked / not wired in the UI**: the studio's AI-generation controls
+("→ AI" script, reroll visual, narrator/music) do not call
+`POST /v1/ai/generations` (task 35); the render overlay is still the fake
+frame-ticker (`render-model.ts`, task 38); there is no gallery UI (task 41).
+A flag-gated mock mode (`NEXT_PUBLIC_SUPAGLOO_DEMO` + `?mock=`) keeps the
+original all-client demo behavior for pure-UI regression specs; real-stack
+Stagehand specs use the extended `?seed=` seam instead (§5).
 
-**Connections (GitHub / OpenRouter / Gloo) are fully mocked**
-(`lib/connections/connections-model.ts`): a pure, immutable in-memory reducer
-with `connected` / `not-linked` / `pending` states. "Connecting" is
-`beginConnect` → `pending`, then a caller-owned `setTimeout`
-(`MOCK_OAUTH_DELAY_MS = 350ms`) calls `completeConnect` → `connected`, filling
-in **hardcoded fake detail** (e.g. GitHub username `@ashsrinivas`, a fake
-masked OpenRouter key). No network calls, no real OAuth redirect for any of
-these three providers from the running app.
+**Deploy**: multi-stage Dockerfile; Railway builds `main` and serves
+https://supagloo.com/ (the UI is the only deployed service today).
 
-**Gloo AI Studio integration that IS real** (`lib/gloo/llm-client.ts`): a
-working OAuth2 client-credentials token exchange
-(`POST https://platform.ai.gloo.com/oauth2/token`) and a chat-completions
-client (`platform.ai.gloo.com/ai/v2`) — but this is used **only to power the
-Stagehand E2E test harness's own LLM calls** (`act`/`extract`/`observe`
-during automated browser testing), gated by `GLOO_CLIENT_ID` /
-`GLOO_CLIENT_SECRET` / `GLOO_STAGEHAND_MODEL` env vars. It is not invoked by
-the in-app "Connect Gloo AI" flow, which is the mocked credentials-paste form
-described above.
+### 2.5 `supagloo-nodejs-api` — Fastify CRUD API (real)
 
-**Studio/editor state** (`lib/studio/*`): a large, well-unit-tested pure
-reducer (`reducer.ts`, 276 lines + 300-line test) covering scene selection,
-edits, commit, publish, version history, and render — but every project
-(`lib/studio/project.ts`) resolves to the **same single hardcoded
-`DEMO_STORYBOARD`**, differing only in id/name/repo/version-branch. Commit,
-Publish, and Render are all `setTimeout`-driven fakes:
-- `commit()` — flips a `committing` flag, clears `dirty` after a delay.
-- Publish wizard — a 4-stage fake provisioning log.
-- Render (`lib/studio/render-model.ts`) — a fake frame counter ticking toward
-  a total with a 4-stage checklist ("Bundled composition", "Synthesized
-  narration & music", "Encoding video", "Upload & finalize share link"); no
-  actual encoding happens.
+Fastify (CJS, node:22-slim) with the zod type provider and a Zod-validated env
+loader; consumes db-lib via nested submodule + `file:` dep. Routes (all under
+`/v1` except `/healthz`):
 
-**Testing**: extensive Vitest unit tests co-located with almost every `lib/`
-module, plus Stagehand-driven `.e2e.ts` specs in `tests/e2e/` covering
-landing, onboarding wizard, project wizards, studio, studio-publish, and
-workspace/profile — all exercised against the mock-session seam, not real
-YouVersion OAuth.
+- **Auth/sessions**: `POST /v1/auth/youversion` (verifies the token against a
+  YouVersion userinfo endpoint, upserts User, mints an opaque session token —
+  SHA-256 at rest, sliding expiry), bearer plugin, `GET /v1/me`,
+  `PATCH /v1/me/onboarding`, `POST /v1/auth/signout`, and a flag-gated
+  `POST /v1/test/seed` (hard-404 unless `NODE_ENV !== 'production'` AND
+  `SUPAGLOO_ENABLE_TEST_SEED=1`; seeds Users + session tokens only).
+- **Connections**: GitHub App install-url/callback/disconnect + repo listing
+  (fresh installation token per request; only `installationId` stored);
+  `POST /v1/connections/openrouter` (encrypts + stores the posted key,
+  `keyLast4` for display — **no server-side verify**; PKCE happens in the
+  browser) + live `GET …/credits` proxy; `PUT /v1/connections/gloo`
+  (**verify-then-store**: mints a real client-credentials token before
+  writing); merged `GET /v1/connections`.
+- **Projects**: grid list, get/rename/soft-delete, versions list,
+  `POST /v1/projects` (create + scaffold enqueue) / `…/import`, per-project
+  409 git-ops concurrency guard, job polling (`stages` JSON),
+  `GET …/manifest?ref=` (synchronous GitHub Contents read + Zod parse),
+  commit/publish endpoints, create-new-repo JIT user-token exchange.
+- **Files**: `GET /v1/files/presign-download` (ownership-scoped, signs against
+  `S3_PUBLIC_ENDPOINT`).
+- **AI generations**: `POST /v1/ai/generations` (kind-specific input schemas +
+  kind→provider compatibility matrix → 422 before row creation), get/list,
+  API-authoritative cancel.
 
-**Deploy**: multi-stage `Dockerfile` (Node 22-alpine, `npm run build` with
-`YV_APP_KEY`/`NEXT_PUBLIC_YV_AUTH_REDIRECT_URL` build args) — this is the
-image the root `supagloo` Compose file and Railway both build from the
-`main` branch (README claims live CI/CD to Railway at supagloo.com).
+The API never runs the DBOS runtime — it enqueues via `DBOSClient`
+(`workflowID` = domain-record id, e.g. jobId) against `DBOS_DATABASE_URL`.
+Because Railway can't init submodules, the Dockerfile git-clones db-lib at a
+pinned `DATABASE_LIB_REF` ARG (a guardrail test keeps it in lockstep with the
+submodule pointer).
 
-### 2.5 `supagloo-nodejs-api` — CRUD API layer (intended)
+### 2.6 `supagloo-nodejs-dbos` — DBOS durable-execution worker (real)
 
-- **Effectively empty scaffolding**, same shape as `supagloo-database-lib`:
-  `README.md`, `LICENSE`, `.claude/agents`, `.claude/commands`,
-  `.claudeignore`, `.gitignore`, plus two nested submodules
-  (`supagloo-database-lib`, `supagloo-prompts`).
-- No `package.json`, no server code, no routes, no Dockerfile — despite the
-  root README's claim of a "Dockerfile IaC" for this service.
+Same skeleton conventions as the api (env loader, Dockerfile, db-lib nested
+submodule). Statically-registered workflows only (registered before
+`DBOS.launch()`; queues `git-ops`, `ai-generation`, `render` declared in a
+single `registry.ts` source of truth). Two DBs: app rows via `DATABASE_URL`,
+checkpoints/queues in `supagloo_dbos` via `DBOS_DATABASE_URL`. No HTTP surface.
 
-### 2.6 `supagloo-nodejs-dbos` — DBOS durable-execution layer (intended)
-
-- **Effectively empty scaffolding**, identical shape to `supagloo-nodejs-api`:
-  `README.md`, `LICENSE`, `.claude/agents`, `.claude/commands`,
-  `.claudeignore`, `.gitignore`, plus the same two nested submodules.
-- No DBOS workflows/steps/queues, no `package.json`, no Dockerfile.
+- **Git-ops workflows** (all start by minting a short-lived installation
+  token; all stage-writes idempotent under replay):
+  `scaffoldProjectWorkflow` (clone → write Remotion scaffold → commit v0.0.0 →
+  PR + merge → cut working v0.0.1 → finalize), `importProjectWorkflow`
+  (verify a repo is a Supagloo project, typed non-retryable failure),
+  `commitVersionWorkflow` (shallow clone → `applyManifest` regeneration →
+  commit+push with jobId-trailer idempotency), `publishVersionWorkflow`
+  (merge working→main via PR, tag `v<semver>`, cut next working branch —
+  patch-bump of the highest existing version).
+- **AI-generation workflows**: `generateScriptWorkflow` (optional YouVersion
+  passage fetch → AI SDK `generateObject` with a bounded schema-repair loop;
+  every attempt checkpointed), `generateImageWorkflow` (first real S3 write;
+  fetch+upload as ONE step so bytes are never checkpointed),
+  `generateAudioWorkflow` (narration TTS + music, byte-stream handling),
+  `generateVideoClipWorkflow` (async submit — `providerJobId` persisted in the
+  same step — then a durable ~30s-sleep poll loop, download, upload; the
+  design's flagship crash/replay case: resume never re-submits).
+- **Provider layer** (`src/providers/`): per-run credential decrypt (inside
+  steps, never checkpointed), AI SDK wrapper (OpenRouter `/api/v1`, Gloo
+  `/ai/v2`, `maxRetries: 0` so DBOS owns retry), plain-`fetch` media client,
+  model-discovery helpers with TTL cache (no hardcoded model ids — lint-test
+  enforced), Gloo token minting, and the YouVersion Data Exchange client
+  (see §5 — its route shapes are unverified against the live API).
+- **Remotion generator** (`src/remotion/`): pure manifest→source generator
+  (deterministic, idempotent; the manifest is the sole source of truth —
+  regeneration overwrites scene sources); e2e-verified with a real
+  `@remotion/bundler` bundle. **No `@remotion/renderer` usage yet** — the
+  render workflow is task 36 (not done).
 
 ## 3. Architecture — Current State
 
 ```mermaid
 graph TD
-    subgraph Browser["Browser (client-side only)"]
-        UI["supagloo-nextjs UI\nApp Router pages/components"]
-        SessModel["session-model.ts\n(pure, client-derived)"]
-        ConnModel["connections-model.ts\n(pure, mocked reducer)"]
-        StudioModel["studio reducer\n(pure, mocked reducer)"]
-        UI --> SessModel
-        UI --> ConnModel
-        UI --> StudioModel
+    subgraph Browser
+        UI["supagloo-nextjs UI\n(App Router; mock mode flag-gated)"]
     end
 
-    YV["YouVersion Platform\n(real OAuth via @youversion/platform-react-ui)"]
-    GlooReal["Gloo AI Studio\nOAuth2 client-credentials + chat-completions\n(real, but only reached by the Stagehand E2E harness)"]
-
-    SessModel -->|"useYVAuth() — real sign-in"| YV
-    UI -. "Stagehand test runner only\n(not the running app)" .-> GlooReal
-
-    subgraph Mocked["Mocked in-browser, no network"]
-        ConnModel -. "fake GitHub OAuth\n(setTimeout, no request)" .-> GH_fake["GitHub (not called)"]
-        ConnModel -. "fake OpenRouter OAuth\n(setTimeout, no request)" .-> OR_fake["OpenRouter (not called)"]
-        ConnModel -. "fake Gloo credential save\n(setTimeout, no request)" .-> Gloo_fake["Gloo AI (not called)"]
-        StudioModel -. "fake commit/publish/render\n(setTimeout tickers)" .-> Render_fake["Render pipeline (does not exist)"]
+    subgraph Compose["supagloo docker-compose.yml (7 services)"]
+        BFF["nextjs BFF routes\napp/api/** (httpOnly session cookie,\nbearer proxy)"]
+        API["supagloo-nodejs-api\nFastify :4000 — auth/sessions,\nconnections, projects, manifest,\njobs, files, ai-generations"]
+        DBOS["supagloo-nodejs-dbos worker\ngit-ops + ai-generation workflows\n(no HTTP surface)"]
+        PG[("postgres:17\nsupagloo (app)\nsupagloo_dbos (system)")]
+        S3[("MinIO\nsupagloo-dev bucket")]
+        MIG["migrate (one-shot)\nprisma migrate deploy"]
     end
 
-    subgraph NotWired["Defined in Compose / .gitmodules, but empty or unused"]
-        API["supagloo-nodejs-api\n(empty scaffold — no code)"]
-        DBOS["supagloo-nodejs-dbos\n(empty scaffold — no code)"]
-        DBLib["supagloo-database-lib\n(empty scaffold — no schema)"]
-        DB[("Database\n(none provisioned)")]
-    end
+    DBLib["supagloo-database-lib\nPrisma schema/migrations + Zod DTOs +\ncrypto/GitHub-App/S3-key/semver helpers\n(nested submodule + file: dep of api & dbos)"]
 
-    Compose["supagloo/docker-compose.yml\n(builds ONLY the nextjs service)"] --> UI
-    API -. "not wired into Compose,\nnothing to call from UI" .-> DBOS
-    API -. "would depend on" .-> DBLib
-    DBOS -. "would depend on" .-> DBLib
-    DBOS -. "no DB code exists" .-> DB
+    YV["YouVersion Platform\n(OAuth sign-in + userinfo verify +\nData Exchange passages)"]
+    GH["GitHub\n(App API + git smart-HTTP)"]
+    OR["OpenRouter\n(LLM/image/audio/video)"]
+    Gloo["Gloo AI Studio\n(LLM)"]
 
-    Prompts["supagloo-prompts\n(submodule: slash commands + subagents)"] -. "dev-time tooling only,\nnot runtime" .-> UI
-    Prompts -. "dev-time tooling only" .-> API
-    Prompts -. "dev-time tooling only" .-> DBOS
-    Prompts -. "dev-time tooling only" .-> DBLib
+    UI --> BFF
+    BFF -->|"bearer-forwarded HTTP"| API
+    API --> PG
+    API --> S3
+    API -->|"DBOSClient.enqueue\n(workflowID = record id)"| PG
+    DBOS -->|"dequeue/checkpoint\n(supagloo_dbos)"| PG
+    DBOS --> S3
+    MIG --> PG
 
-    style API fill:#444,stroke:#888,color:#ccc
-    style DBOS fill:#444,stroke:#888,color:#ccc
-    style DBLib fill:#444,stroke:#888,color:#ccc
-    style DB fill:#444,stroke:#888,color:#ccc,stroke-dasharray: 5 5
+    UI -->|"real OAuth sign-in (SDK)"| YV
+    API -->|"userinfo verify"| YV
+    API -->|"App JWT / installation tokens,\ncontents read, repo list"| GH
+    API -->|"credits proxy / Gloo verify"| OR
+    API --> Gloo
+    DBOS -->|"clone/push/PR/merge/tag"| GH
+    DBOS -->|"generateObject + media"| OR
+    DBOS --> Gloo
+    DBOS -->|"passages"| YV
+
+    DBLib -.-> API
+    DBLib -.-> DBOS
+
+    Stubs["provider stubs + git server\n(docker-compose.test.yml — TEST ONLY,\nexplicit -f, never in prod images)"]
+    Stubs -. "env-overridden base URLs\nin e2e (§5)" .- API
+    Stubs -. " " .- DBOS
 ```
+
+All provider base URLs default to the **real** hosts in both services' env
+loaders (`https://openrouter.ai`, `https://platform.ai.gloo.com`,
+`https://api.youversion.com`, `https://api.github.com` / `https://github.com`)
+— "real-by-default ⇒ prod needs zero config". Only test setup overrides them
+(§5). Per-user OpenRouter/Gloo credentials live encrypted in Postgres rows,
+never in env config.
 
 ## 4. Sequence Diagrams (as implemented today)
 
-### 4.1 Sign-in flow (real)
+### 4.1 Sign-in → server session (real)
 
 ```mermaid
 sequenceDiagram
     actor U as Visitor
-    participant Btn as SignInButton
-    participant YVSDK as useYVAuth() (YouVersion SDK)
+    participant UI as supagloo-nextjs (browser)
     participant YV as YouVersion Platform
-    participant SP as SessionProvider (client)
-    participant Home as / (HomeSwitch)
+    participant BFF as POST /api/auth/session (BFF)
+    participant API as POST /v1/auth/youversion
+    participant DB as Postgres
 
-    U->>Btn: Click "Sign in with YouVersion"
-    Btn->>YVSDK: signIn({ scopes: ["profile","email"] })
-    YVSDK->>YV: OAuth redirect
-    YV-->>YVSDK: Redirect back to NEXT_PUBLIC_YV_AUTH_REDIRECT_URL\n(with auth result)
-    YVSDK-->>SP: auth.isAuthenticated = true, userInfo
-    Note over SP: No server call — resolveSession() runs\nclient-side, purely from YV SDK state
-    SP->>SP: Read localStorage onboarding flag\n(onboardingStorageKey(userId))
-    SP-->>Home: session.isAuthed = true
-    Home->>Home: Render WorkspaceHome instead of PublicLanding
-    alt first sign-in (not onboarded)
-        Home->>Home: Overlay SetupWizard
-    end
+    U->>UI: "Sign in with YouVersion"
+    UI->>YV: OAuth redirect (SDK)
+    YV-->>UI: redirect back, access token
+    UI->>BFF: POST /api/auth/session { token }
+    BFF->>API: forward token
+    API->>YV: GET userinfo (verify token)
+    API->>DB: upsert User (firstSignInAt on create),\nmint opaque session (SHA-256 at rest)
+    API-->>BFF: session token + user
+    BFF-->>UI: Set-Cookie (httpOnly session)
+    Note over UI: Onboarding state is server-driven\n(GET /v1/me), not localStorage
 ```
 
-### 4.2 "Connect Gloo AI" flow (as built — fully mocked)
+### 4.2 Create project → scaffold workflow (real git-ops)
 
 ```mermaid
 sequenceDiagram
     actor U as Signed-in user
-    participant Form as GlooCredentialsForm
-    participant SP as SessionProvider
-    participant CM as connections-model.ts (pure reducer)
+    participant UI as NewProjectWizard
+    participant API as supagloo-nodejs-api
+    participant DB as Postgres
+    participant W as dbos worker (git-ops queue)
+    participant GH as GitHub (App API + git)
 
-    Note over Form: Client ID field is static display text.\nClient secret input is pre-filled with a\nhardcoded mock value ("gloo_client_secret_mock"),\nread-only.
-    U->>Form: Click "Save & verify"
-    Form->>SP: connectProvider("gloo")
-    SP->>CM: beginConnect(state, "gloo")
-    CM-->>SP: status = "pending"
-    SP->>SP: setTimeout(350ms)
-    Note right of SP: No network request is made.\nNo real Gloo OAuth2 token exchange occurs\nin this path.
-    SP->>CM: completeConnect(state, "gloo")
-    CM-->>SP: status = "connected", detail = {method: "CLIENT CREDENTIALS"} (hardcoded)
-    SP-->>Form: Re-render as "Connected"
-```
-
-For contrast, the **real** Gloo OAuth2 client-credentials exchange that does
-exist in the codebase (`lib/gloo/llm-client.ts`) is only ever invoked by the
-Stagehand E2E test runner to obtain an LLM for `act`/`extract`/`observe` —
-never by this in-app UI flow:
-
-```mermaid
-sequenceDiagram
-    participant Test as Stagehand E2E test (tests/e2e/*.e2e.ts)
-    participant Client as glooLlmClient()
-    participant Gloo as Gloo AI Studio (platform.ai.gloo.com)
-
-    Test->>Client: glooLlmClient()
-    Client->>Gloo: POST /oauth2/token (Basic: GLOO_CLIENT_ID:GLOO_CLIENT_SECRET,\ngrant_type=client_credentials)
-    Gloo-->>Client: access_token (~1h TTL)
-    Client-->>Test: AISdkClient wrapping gloo.chat(GLOO_STAGEHAND_MODEL)
-    Test->>Gloo: POST /ai/v2/chat/completions (via Stagehand act/extract/observe)
-    Gloo-->>Test: structured JSON result
-```
-
-### 4.3 New project → studio flow (mocked)
-
-```mermaid
-sequenceDiagram
-    actor U as Signed-in user
-    participant WH as WorkspaceHome
-    participant NPW as NewProjectWizard
-    participant Log as provisioning-log.ts (fake ticker)
-    participant Router as Next.js router
-
-    U->>WH: Click "+ New project"
-    WH->>NPW: open wizard
-    U->>NPW: Enter repo name / pick tab, click "Create & scaffold"
-    NPW->>Log: initLog() + setTimeout ticker
-    loop fake provisioning steps
-        Log-->>NPW: advanceLog() (row-by-row, PROVISION_ROW_DELAY_MS)
+    opt create-new-repo path
+        UI->>GH: JIT user-auth redirect (zero-storage\ntoken hop, API-side exchange) → repo created
     end
-    Note over Log: No GitHub repo is actually created.\nNo backend call occurs.
-    NPW-->>U: "Ready" card with studioUrl(id)
-    U->>Router: Click "Open in studio"
-    Router->>Router: navigate to /studio/[id]
-    Note over Router: findStudioProject(id) always resolves\nto the same hardcoded DEMO_STORYBOARD
+    UI->>API: POST /v1/projects (via BFF)
+    API->>DB: create Project + ProjectJob\n(409 if a git-ops job is already in flight)
+    API->>DB: DBOSClient.enqueue(scaffoldProjectWorkflow,\nworkflowID = jobId)
+    W->>GH: mint installation token → verify repo access
+    W->>GH: clone → write Remotion scaffold →\ncommit v0.0.0 → push → PR → merge →\ncut working branch v0.0.1
+    W->>DB: idempotent stage writes; finalize\nProject/ProjectVersion rows
+    loop poll
+        UI->>API: GET /v1/projects/:id/jobs/:jobId
+        API-->>UI: stages JSON → provisioning log rows
+    end
+    UI-->>U: land in /studio/[slug]
 ```
 
-### 4.4 Studio commit / publish / render (mocked)
+### 4.3 AI generation — video clip (real backend; UI wiring is task 35)
 
 ```mermaid
 sequenceDiagram
-    actor U as Editor user
-    participant TB as Studio TopBar
-    participant Ctx as StudioProvider (reducer)
-    participant Pub as PublishWizard
-    participant Rnd as RenderOverlay (render-model.ts)
+    participant C as Caller (HTTP; the studio UI\ndoes NOT call this yet — task 35)
+    participant API as POST /v1/ai/generations
+    participant DB as Postgres
+    participant W as dbos worker (ai-generation queue)
+    participant OR as OpenRouter
+    participant S3 as MinIO/S3
 
-    U->>TB: Edit a scene, click "Commit"
-    TB->>Ctx: commit()
-    Ctx->>Ctx: dispatch COMMIT_BEGIN, setTimeout(MOCK_COMMIT_DELAY_MS)
-    Ctx->>Ctx: dispatch COMMIT_DONE (dirty=false)
-    Note over Ctx: No git commit, no server call.
-
-    U->>TB: Click "Publish"
-    TB->>Pub: openPublish()
-    U->>Pub: Confirm publish
-    Pub->>Ctx: confirmPublish() → fake 4-stage provisioning log
-    Pub-->>U: Step 3 CTA → "Render"
-
-    U->>Pub: Trigger render
-    Pub->>Ctx: startRender()
-    Ctx->>Rnd: initRender(totalFrames, publishedVersion)
-    loop every RENDER_TICK_MS (150ms)
-        Rnd->>Rnd: advanceRender() — framesDone += 10 (fake)
+    C->>API: { kind: video, provider: openrouter, input }
+    API->>API: kind-specific Zod input +\nkind→provider matrix (422 before any row)
+    API->>DB: create AiGeneration; enqueue\n(workflowID = generation id)
+    W->>DB: load request; decrypt the user's\nOpenRouter key INSIDE the step
+    W->>OR: submit video job (202) —\nproviderJobId persisted in the SAME step
+    loop durable poll (~30s DBOS.sleep, bounded)
+        W->>OR: GET job status
     end
-    Note over Rnd: No @remotion/renderer call, no encoding,\nno file produced, no upload.
-    Rnd-->>U: 100% → "render complete" (simulated)
+    W->>OR: download completed clip
+    W->>S3: upload under projects/{id}/assets/…
+    W->>DB: persist resultAssetKey → succeeded
+    Note over W: Crash/replay between submit and completion\nresumes polling — the submit step is memoized,\nnever re-executed (exactly-once submission)
+    C->>API: GET /v1/ai/generations/:id (poll)
 ```
 
-## 5. Gaps / Not Yet Implemented
+Script/image/audio follow the same enqueue-and-poll shape; script adds an
+optional YouVersion passage fetch and a bounded LLM schema-repair loop (every
+attempt checkpointed), and all media workflows fetch+upload bytes in a single
+step so raw bytes are never checkpointed.
 
-Concrete absences, for the follow-up design-delta task:
+### 4.4 Studio commit / publish (real)
 
-- **No database.** `supagloo-database-lib` has no Prisma schema, no models,
-  no Zod types, no migrations — it's an unpopulated repo shell. Nothing in
-  any repo persists data server-side.
-- **No CRUD API.** `supagloo-nodejs-api` has no `package.json` or source —
-  zero HTTP endpoints exist anywhere in the system (confirmed: no
-  `app/**/route.ts` in Next.js either).
-- **No DBOS durable-execution layer.** `supagloo-nodejs-dbos` has no
-  workflows/steps/queues/code at all — the README's "queues DBOS jobs for
-  LLM calls" data flow is aspirational only.
-- **No real OAuth for GitHub, OpenRouter, or Gloo AI Studio from the running
-  app.** All three "Connect" flows are pure client-side reducers with
-  `setTimeout` fake latency and hardcoded success data; no redirect, no
-  token exchange, no credential storage occurs. (The one real Gloo OAuth2
-  flow in the codebase powers only the Stagehand E2E test harness, not the
-  product UI.)
-- **No server-side session.** Auth state lives entirely in the browser via
-  the YouVersion SDK's client state + a `localStorage` onboarding flag; there
-  is no Supagloo-issued cookie/JWT and no session store.
-- **No rendering pipeline.** Only `@remotion/player` (playback preview) is
-  present; there's no `@remotion/renderer`/lambda/CLI, no encoding, no
-  storage/upload of rendered video. "Render" in the UI is a fake progress
-  ticker.
-- **No real projects/storyboards.** Every `/studio/[id]` route resolves to
-  one hardcoded `DEMO_STORYBOARD`; "New project" and "Import repo" never
-  touch GitHub or any backend — they run a fake log and hand back a
-  synthetic id.
-- **No AI script/image/music generation.** Nothing in the UI calls an LLM,
-  image model, or music model to actually generate content; the only working
-  LLM call path (`lib/gloo/llm-client.ts`) exists solely to power AI-driven
-  browser testing (Stagehand `act`/`extract`/`observe`), not product
-  features.
-- **No scripture/YouVersion content API usage.** No calls to a YouVersion
-  scripture/Bible-content API were found — only the auth SDK is integrated.
-- **Docker Compose only runs the UI.** `supagloo-nodejs-api` and
-  `supagloo-nodejs-dbos` services are not defined in `docker-compose.yml` (no
-  Dockerfiles exist for them yet either).
-- **CI/CD gap vs. README claims.** The root README says API/DBOS deploy to
-  Railway with "Dockerfile IaC," but neither repo has a Dockerfile or any
-  deployable code; only `supagloo-nextjs` has a working `Dockerfile` and live
-  deployment (supagloo.com).
-- **`recode.md` / `redesign.md` in `supagloo-prompts` are empty** — the
-  re-entrant code/design workflows they're presumably meant to define don't
-  exist yet.
-- **No inter-service wiring exists to describe.** The intended
-  UI → API → DBOS → DB request chain in the root README is entirely
-  prospective; today the UI is a closed, self-contained client app.
+```mermaid
+sequenceDiagram
+    actor U as Editor
+    participant UI as Studio
+    participant API as supagloo-nodejs-api
+    participant W as dbos worker
+    participant GH as GitHub
+
+    U->>UI: edit scenes (manifest⇄storyboard adapter)
+    U->>UI: Commit
+    UI->>API: POST /v1/projects/:id/commit { manifest, message }
+    API->>W: enqueue commitVersionWorkflow
+    W->>GH: shallow clone working branch →\napplyManifest (regenerate scene sources) →\ncommit + push (jobId-trailer idempotency)
+    W-->>UI: (via polled ProjectJob stages) done;\nProjectVersion updated in place
+
+    U->>UI: Publish
+    UI->>API: POST /v1/projects/:id/publish { message }
+    API->>W: enqueue publishVersionWorkflow
+    W->>GH: commit pending → PR working→main →\nmerge → tag v<semver> → cut next working\nbranch (patch-bump of highest version)
+    W-->>UI: stages mirror the publish wizard;\nversion states flip working→published,\nnew working version created
+```
+
+## 5. Testing & E2E Conventions — provider stubs (current practice)
+
+This section documents how testing actually works today. The governing policy
+is stated in `docs/plan.md` §1 ("Test strategy"): provider egress in e2e is
+deterministic — all outbound provider base URLs are env-overridable and
+pointed at the provider-stub harness — and **"Live-provider smoke tests are
+manual/optional, never part of the gating suite."** Every gating e2e suite in
+every repo runs against stubs, never the real YouVersion/Gloo/OpenRouter/
+GitHub APIs.
+
+### 5.1 Layered test strategy (as practiced)
+
+- **Unit**: Vitest in every repo, co-located, network/DB mocked.
+- **db-lib e2e**: real migrations + generated client against Compose Postgres.
+- **api e2e**: real HTTP against a running API + Compose Postgres/MinIO, with
+  provider egress at the stubs.
+- **dbos e2e**: real `DBOSClient` enqueue (workflowID = record id) to
+  completion against the real system DB + app DB + MinIO, including
+  crash/replay tests (kill worker mid-workflow, restart, assert no duplicated
+  side effects — verified via stub call counts).
+- **nextjs UI e2e**: Stagehand v3 (browser AI testing; its own LLM is Gloo via
+  client-credentials) — mock-mode specs for pure-UI regressions, plus
+  real-stack specs that obtain a real session via the seed seam. Playwright is
+  not used; non-UI e2e never uses a browser.
+
+### 5.2 The provider-stub harness (plan task 9)
+
+`docker-compose.test.yml` (explicit `-f` only; stubs never ship in production
+images) adds five services from one shared zero-dependency image
+(`tests/stubs`, selected by `STUB_KIND`): `github-stub` (:4801, App-JWT
+enforcing), `openrouter-stub` (:4802), `gloo-stub` (:4803), `youversion-stub`
+(:4804), and `git-server` (:4805) — a local git smart-HTTP server so
+clone/push/PR/merge flows run against *real git*. Stubs serve canned +
+stateful responses (PKCE key exchange, async video-job state machine, Bible
+passage fixtures), support `/__admin` seeding routes (e.g. programmable chat
+scripts, contents), and expose `/__stub/health`, `/__stub/reset`, and a
+`/__stub/calls` call-count introspection endpoint that e2e assertions rely on.
+
+### 5.3 How tests force stubs (the base-URL override pattern)
+
+The app itself is **real-by-default**: `supagloo-nodejs-api/src/config/env.ts`
+and `supagloo-nodejs-dbos/src/config/env.ts` define every provider base URL
+with the real host as the zod `.default()` — only test code redirects egress:
+
+- `docker-compose.test.yml` overrides the `api` service's
+  `OPENROUTER_BASE_URL` / `GLOO_BASE_URL` / `YOUVERSION_BASE_URL` /
+  `GITHUB_*_BASE_URL` to the in-network stub containers.
+- Both backend repos' `tests/e2e/global-setup.ts` bring the stub containers up
+  as a prerequisite and default every provider var to its localhost stub port
+  (`process.env.X_STUB_URL ?? "http://localhost:480N"`).
+- The e2e specs themselves (`supagloo-nodejs-api/tests/e2e/auth.e2e.ts`,
+  `supagloo-nodejs-dbos/tests/e2e/{generate-*,providers}.e2e.ts`) hardcode the
+  same fallback and pass stub URLs explicitly into client constructors;
+  `providers.e2e.ts` goes further and asserts in `beforeAll` that
+  `env.OPENROUTER_BASE_URL` literally equals the stub URL.
+
+### 5.4 Known couplings and gaps in the stub convention (facts, not proposals)
+
+These are load-bearing properties of today's test suite that any future change
+to provider-testing policy would have to contend with:
+
+1. **Credential seeding bypasses the real connect flows.** The DBOS workflow
+   e2e tests fabricate provider credentials by calling
+   `prisma.openRouterConnection.create()` directly with
+   `encryptSecret("sk-or-test-key", …)` — the real OpenRouter connect path
+   (browser PKCE; the API stores without server-side verification) and the
+   real Gloo path (verify-then-store, which mints a live token before writing
+   a row) are never exercised in dbos e2e. The flag-gated `POST /v1/test/seed`
+   (api only; requires BOTH `NODE_ENV !== 'production'` AND
+   `SUPAGLOO_ENABLE_TEST_SEED=1`) seeds only Users + session tokens — nothing
+   about provider connections — and no seed route exists in dbos at all.
+2. **Two YouVersion contracts are unverified against the live API.** The Data
+   Exchange client (`supagloo-nodejs-dbos/src/providers/youversion.ts`)
+   carries an explicit ROUTE-SHAPE DISCREPANCY comment: three sources disagree
+   on the real API's paths, none verifiable from the dev environment, so the
+   client is deliberately built to the STUB's routes
+   (`/data-exchange/v1/bibles`, `/data-exchange/v1/passages`) "so the e2e is
+   real and passes", to be reconciled when app licensing is wired. The API's
+   userinfo verifier (`supagloo-nodejs-api/src/auth/youversion.ts`,
+   `GET /auth/v1/userinfo`) is likewise self-described as an invented
+   contract. Real interactive YouVersion OAuth is a browser login flow and is
+   not automatable in the e2e harness — `auth.e2e.ts` tests session/bearer
+   mechanics via the stub plus the seed bypass, never real OAuth.
+3. **The flagship crash/replay test depends on stub-only introspection.**
+   `generateVideoClipWorkflow`'s exactly-once-submit-across-crash/replay e2e
+   (task 34) proves no-re-submission by reading the openrouter-stub's
+   `/__stub/calls` `videoJobsCreated` counter, keyed on the `Idempotency-Key`
+   header. Real OpenRouter has no such introspection endpoint, and there is no
+   confirmation the real video endpoint honors `Idempotency-Key` the way the
+   stub does.
+4. **No CI exists in any of the five repos** (no `.github/workflows`
+   anywhere), so there is no secrets-into-CI story. Live-API key placeholders
+   were added to `.env.example` files (`OPENROUTER_E2E_TEST_API_KEY`,
+   `GLOO_CLIENT_ID`/`GLOO_CLIENT_SECRET`, `YOUVERSION_APP_KEY`) but only
+   `YOUVERSION_APP_KEY` is wired into any code (optional header on the Data
+   Exchange client). Naming caveat: in `supagloo-nextjs`,
+   `GLOO_CLIENT_ID`/`GLOO_CLIENT_SECRET` configure **Stagehand's own LLM**
+   (test-harness AI), an unrelated collision with the app's per-user Gloo
+   connections.
+
+## 6. Gaps / Not Yet Implemented
+
+Per `docs/plan.md` (tasks 35–54 not done):
+
+- **Studio AI wiring (35).** The `/v1/ai/generations` endpoints and all four
+  workflows are real, but the studio's generation controls ("→ AI" script,
+  reroll visual, narrator voice, music bed) do not call them yet.
+- **Render pipeline (36–38).** No `renderWorkflow`, no `@remotion/renderer`
+  usage, no render API endpoints; the UI render overlay is still the fake
+  frame-ticker. `RenderJob` exists only as a schema row.
+- **Gallery (39–41).** No gallery endpoints, upvotes, or UI; `GalleryItem` /
+  `GalleryUpvote` exist only as schema rows.
+- **Cleanup workflow (42).** No scheduled orphaned-asset / expired-session
+  purge.
+- **Ops/hardening (43–47).** Boot-time env hardening incomplete; Prisma-pin
+  CI enforcement not wired (no CI exists at all); render load/perf validation
+  not run; **api/dbos are not deployed** (Railway serves only the Next.js
+  app; task 46 is the prod wiring); the full golden-path acceptance run
+  doesn't exist.
+- **Code-review-surfaced follow-ups (48–54)**, deliberately deferred:
+  installation-token plaintext in DBOS step checkpoints (48); repo-creation
+  TOCTOU race — no DB constraint backs the one-repo-one-project check (49);
+  git-ops merge-sha fallback + ProjectJob/DBOS status reconciliation (50);
+  GitHub install-callback CSRF/state-nonce (51); connect-flow UX/e2e polish
+  (52); wizard robustness — untested inline state machines, no repo-creation
+  compensation, client-guessed studio slug (53); publish sends a static
+  hardcoded string as the real PR body (54).
+- **Live-provider verification.** By policy (§5), nothing in the gating
+  suites talks to the real YouVersion/Gloo/OpenRouter APIs; the two invented
+  YouVersion contracts and the video `Idempotency-Key` assumption remain
+  unverified against the live services.
