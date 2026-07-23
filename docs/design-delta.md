@@ -1593,6 +1593,36 @@ failure-injection e2e survives; no stub is retained to support one.**
   now-backwards `beforeAll` assertion: assert `env.OPENROUTER_BASE_URL` (and
   Gloo/YouVersion) carry **no stub override** — a guard against the stub
   pattern silently creeping back.
+- **Spec bodies — the third coupling category:** stub coupling is not only
+  URL/config wiring; the e2e test bodies themselves call constructs that do
+  not exist on real provider hosts: `/__stub/reset` + `/__stub/calls`
+  introspection (call counters such as `chatCompletions`, `tokensIssued`,
+  `videoJobsCreated`) and `/__admin/chat-script` / `/__admin/speech-script`
+  response **programming**, plus assertions on stub-fabricated literals
+  (`stub/*` discovery-catalog ids, `FAKE_MP4` magic bytes, `vid_` job-id
+  prefixes). The migration tasks must remove these, not just the URLs — an
+  implementation that only swaps base URLs would still call these endpoints
+  against real hosts and fail immediately. Resolution per kind: response
+  programming disappears with §10.6's unit-level reclassification;
+  introspection counters are replaced by real-observable proofs (persisted
+  rows, DBOS system-DB step-execution introspection — the §10.5 pattern) or
+  deleted where the property is provider-introspection-only (the
+  `Idempotency-Key` double-submit proof — §10.5 accepted risk); exact
+  programmed-content assertions become schema-valid/structural assertions.
+  Nuance: `global-setup.ts`'s `/__admin/*-script` calls are stub-image
+  **staleness probes**, not response programming — they are deleted together
+  with the three-provider stub wiring, no replacement needed.
+- **`providers.e2e.ts` disposition — rework, not delete:** it is the only
+  spec exercising real Gloo `.chat()` at the provider-primitive level (the
+  workflow e2e default to OpenRouter), a genuine coverage niche, and it
+  hosts the inverted no-stub guard — so it survives, slimmed: the OpenRouter
+  and Gloo chat round-trips (run-time-resolved model ids, schema-valid
+  result assertions) and the discovery assertions (non-empty catalogs,
+  structural shape — no `stub/*` literals) flip to real hosts; the
+  media-client section (speech/video primitives + the `Idempotency-Key`
+  double-submit test) is **deleted** as duplicative of workflow-level
+  real-host coverage (§10.2/§10.5) and, for the idempotency proof,
+  impossible without provider-side introspection.
 - **Stub sources:** delete the three provider stub kinds from `tests/stubs`
   and their root-harness self-tests (git history preserves them; with §10.6
   they have zero remaining consumers). Keeping dead stubs invites quiet
