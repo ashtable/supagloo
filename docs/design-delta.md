@@ -7,6 +7,15 @@ Turns 7–14). This is a delta: what to add/change to get from the mocked
 prototype to the real system. It is a design for review — no code is written
 by this step.*
 
+*Update 2026-07-22 — **second delta round appended (§10, plus §6e, a §9-Q9
+addendum, and §9-Q12).** The original round above/below (§1–§9) has since been
+**fully realized**: plan tasks 1–34 are built and verified, and the refreshed
+`current-design.md` (2026-07-22) documents the resulting real system as the new
+baseline. §10 is a new delta layered on top of that baseline, driven by a new
+requirement: all e2e tests must run against the real YouVersion / Gloo AI /
+OpenRouter APIs, never provider stubs. §1–§9 are left as written — they are the
+historical record of round 1, not pending work.*
+
 ---
 
 ## 1. Scope & mapping to the requested features
@@ -883,6 +892,52 @@ sequenceDiagram
     A->>DB: UI poll sees succeeded
 ```
 
+### (e) Real-provider e2e: credential seeding + flagship crash/replay (delta round 2 — §10)
+
+*Added 2026-07-22. Shows the redesigned e2e setup (§10.3) and the replacement
+exactly-once proof (§10.5) for `generateVideoClipWorkflow` against LIVE
+OpenRouter/Gloo. All provider participants here are the real hosts — no stubs.*
+
+```mermaid
+sequenceDiagram
+    participant T as e2e runner (vitest)
+    participant A as API (real routes)
+    participant DB as App DB
+    participant SYS as DBOS system DB
+    participant W as dbos worker
+    participant GL as Gloo AI (LIVE)
+    participant OR as OpenRouter (LIVE)
+    participant S3 as MinIO/S3
+
+    Note over T: setup fails fast if OPENROUTER_E2E_TEST_API_KEY /<br/>GLOO_CLIENT_ID+SECRET are unset (§10.8)
+    T->>A: POST /v1/test/seed (user + session — scope unchanged, §9-Q9)
+    alt api e2e — the connect routes ARE the surface under test
+        T->>A: POST /v1/connections/openrouter { real key }
+        A->>DB: encrypt + store (no provider verify — real PKCE-key semantics)
+        T->>A: PUT /v1/connections/gloo { real clientId/secret }
+        A->>GL: mint client-credentials token (LIVE verify-then-store)
+        A->>DB: encrypt + store
+    else dbos e2e — self-contained setup helper (§10.3)
+        T->>GL: mint client-credentials token (LIVE — the same call the API's verify makes)
+        T->>DB: write connection rows via db-lib encryptSecret(REAL creds)
+    end
+
+    T->>SYS: DBOSClient.enqueue(generateVideoClipWorkflow, workflowID=genId)
+    W->>OR: POST /api/v1/videos (LIVE submit, Idempotency-Key header)
+    W->>DB: providerJobId persisted in the SAME step
+    T->>DB: capture providerJobId, then kill the worker (crash injection)
+    T->>W: restart worker → DBOS recovery
+    Note over W,SYS: submitVideoJob replayed from its checkpoint — NOT re-executed
+    loop durable poll (~30s sleeps — REAL generation latency)
+        W->>OR: GET polling_url (LIVE)
+    end
+    W->>OR: download completed clip
+    W->>S3: upload asset
+    W->>DB: AiGeneration → succeeded, resultAssetKey
+    T->>DB: assert providerJobId UNCHANGED vs the pre-crash capture
+    T->>SYS: assert exactly ONE recorded execution of submitVideoJob (§10.5)
+```
+
 ---
 
 ## 7. DBOS workflow/step boundaries — static registration only
@@ -1143,11 +1198,15 @@ app database besides DBOS workflows, and the only S3 URL signer.
 
 ---
 
-## 9. Open questions / risks — all resolved 2026-07-17
+## 9. Open questions / risks — round 1 (Q1–Q11) all resolved 2026-07-17
 
 *User answers received 2026-07-17. Each item keeps its original text as the
 paper trail; the bolded annotation records the decision. Numbering is
 unchanged. None of these remain blocking.*
+
+*(2026-07-22, delta round 2: Q9 gained an addendum, and Q12 was added — the
+only §9 item postdating the round-1 resolutions. Round 2's accepted risks live
+inline in §10, following Q10's "accepted risk, not resolved" pattern.)*
 
 1. **GitHub OAuth App vs GitHub App.** Wireframe 11a promises "Never touch
    repos you don't select" — classic OAuth `repo` scope **cannot** deliver
@@ -1256,6 +1315,16 @@ unchanged. None of these remain blocking.*
    **AND** an explicit opt-in flag (`SUPAGLOO_ENABLE_TEST_SEED=1`). Absent the
    flag it **hard-404s regardless of `NODE_ENV`** — so a misconfigured non-prod
    deployment still cannot seed unless the flag is deliberately set.
+
+   **Round-2 addendum (2026-07-22 — see §10.3):** with e2e going real-provider,
+   the seed endpoint's scope was reconsidered — and deliberately **stays
+   Users + sessions only**. Provider connections are NOT added to it: api e2e
+   establishes them by calling the **real connect routes** with real
+   credentials, and dbos e2e uses a **live-verifying setup helper** (§10.3).
+   Rationale: the connect routes are themselves the surface under test, and
+   keeping the test-seed seam minimal keeps its production-exposure risk
+   minimal. No dbos-side seed endpoint is added (dbos still has no HTTP
+   surface).
 10. **YouVersion Bible content API.** VOTD/passage project origins and
     script generation need actual verse text; only the auth SDK is
     integrated today. API availability/licensing for verse text (per
@@ -1316,9 +1385,294 @@ unchanged. None of these remain blocking.*
     `supagloo.prismaVersion` field in its package.json); each consumer runs
     a CI check (or postinstall script) that fails the build when its own
     pinned version differs. (Also stated in the §2 preamble.)
+12. **Secrets-into-CI story — explicitly deferred (added 2026-07-22, delta
+    round 2).** Real-provider e2e (§10) needs real secrets:
+    `OPENROUTER_E2E_TEST_API_KEY`, `GLOO_CLIENT_ID`/`GLOO_CLIENT_SECRET`,
+    `YOUVERSION_APP_KEY`, and the optional `YOUVERSION_E2E_ACCESS_TOKEN`
+    (§10.4). No CI exists in any of the five repos today (zero
+    `.github/workflows` anywhere), so there is nothing to wire them into. The
+    local-dev / manual-run `.env` story **is** designed now (§10.8); how these
+    secrets reach a future CI (secret store, log masking, per-run spend caps,
+    key rotation) is flagged as an open question to be answered when CI itself
+    is designed — deliberately **not** designed here.
+
+---
+
+## 10. Delta round 2 (2026-07-22): e2e always runs against real provider APIs
+
+### 10.1 Context and scope
+
+Round 1 (§1–§9) is fully built (plan tasks 1–34; see the refreshed
+`current-design.md`, whose §5 documents today's stub-based e2e practice and
+whose §5.4 lists the exact couplings this section resolves). This round changes
+**testing posture only** — no product features, no data-model changes, no UI
+changes (the Step-2 wireframes check confirmed no test-mode/stub-vs-real UI
+concept exists; §5.3 is untouched).
+
+**New requirement:** every e2e test runs against the **real YouVersion, Gloo
+AI, and OpenRouter APIs — never provider stubs.**
+
+In scope: those three providers, across api / dbos / root harness e2e (and the
+server-side egress behind nextjs real-stack specs). **Explicitly out of scope:**
+
+- **GitHub.** Not named in the requirement. `github-stub` and `git-server`
+  (the local git smart-HTTP server) stay exactly as they are.
+- **CI secrets.** No CI exists project-wide; deferred as §9-Q12.
+
+This supersedes the round-1 policy line now recorded in `docs/plan.md` §1
+("live-provider smoke tests are manual/optional, never gating") **for these
+three providers**: real-provider e2e *becomes* the gating suite. plan.md is
+updated in a later step of this process, not here.
+
+| Coupling (current-design.md §5.4) | Resolution | Where |
+|---|---|---|
+| Credential seeding bypasses real connect flows | Real creds via real routes (api) / live-verifying helper (dbos) | §10.3, §6e |
+| YouVersion Data Exchange routes unverified | Groundwork task: verify/fix against the live API | §10.4a |
+| YouVersion userinfo needs interactive OAuth | Unit-level contract tests + optional env-gated live spec; accepted risk | §10.4b |
+| Flagship crash/replay test reads `/__stub/calls` | providerJobId stability + DBOS system-DB step introspection | §10.5 |
+| Stub-only failure injection (503/repair/timing) | Reclassified as unit tests (injected-fetch mocks) | §10.6 |
+| `docker-compose.test.yml` stub services + URL overrides | Remove the three stubs and their overrides | §10.7 |
+
+### 10.2 The policy, restated precisely
+
+**An e2e test either exercises the real provider or does not exercise that
+provider at all.** There is no stub middle ground for
+YouVersion/Gloo/OpenRouter. Deterministic *provider misbehavior* (injected
+failures, controlled timing) is by definition a simulation, so it is a **unit**
+concern (§10.6); e2e proves real integration — auth, request/response shapes,
+happy paths, and durability properties — against live hosts.
+
+No new configuration is needed to point at real hosts: both backend env
+loaders already default every provider base URL to the real host
+("real-by-default ⇒ prod needs zero config"). The delta is **removing** the
+test-side overrides, not adding config. One narrow exception category exists:
+**interactive browser logins** (YouVersion OAuth sign-in, OpenRouter's PKCE
+login page) cannot be automated with static credentials; UI specs may shim
+*only that interactive hop*, and everything after it — the key POST, encrypted
+storage, live credits fetch — is real (§10.4b).
+
+### 10.3 Credential seeding — OpenRouter and Gloo
+
+Secrets (all real, from `.env` — §10.8): `OPENROUTER_E2E_TEST_API_KEY` (a
+dedicated, low-balance key) and `GLOO_CLIENT_ID`/`GLOO_CLIENT_SECRET` (real,
+live-verifiable credentials).
+
+**api e2e** seeds by calling its own real routes (they are the surface under
+test): `POST /v1/test/seed` for user+session (scope unchanged — §9-Q9
+addendum), then `POST /v1/connections/openrouter` with the real key (the route
+performs no provider-side verify — faithfully matching real PKCE-obtained-key
+semantics) and `PUT /v1/connections/gloo` with the real client credentials
+(the route's **verify-then-store mints a live Gloo token** — the verify is now
+a real-API assertion on every run). `providers.e2e.ts`-style credit/verify
+proxies hit live OpenRouter/Gloo.
+
+**dbos e2e** gets a shared **setup helper** replacing today's fabricated
+`prisma.openRouterConnection.create()` ciphertexts:
+
+- **Gloo:** first mint a **live client-credentials token** against the real
+  Gloo host — the exact call the API's `verifyClientCredentials` makes (reuse
+  dbos's own `mintGlooToken`) — and **fail setup** if it doesn't succeed; only
+  then write the row with `encryptSecret(<real secret>)`. Seeding therefore
+  goes through real verification; no unverified Gloo row ever exists.
+- **OpenRouter:** write the row with `encryptSecret(OPENROUTER_E2E_TEST_API_KEY)`
+  directly — semantically identical to the real route, which also stores
+  without provider-side verification.
+
+**Rejected alternative:** having dbos e2e call the API container's connect
+routes. It would exercise one more real hop, but couples the dbos harness to a
+built API image and collides with the known in-flight constraint that the
+containerized API cannot build against uncommitted db-lib — breaking the
+sibling-repo dev loop for no additional proof (the API routes are already
+covered by api e2e). The helper keeps dbos e2e self-contained while every
+credential in the DB is live-valid.
+
+Net effect: **no fabricated ciphertexts or dummy keys anywhere in e2e.** §6e
+shows both paths.
+
+### 10.4 YouVersion — two separate resolutions
+
+**(a) Data Exchange client (dbos → passage text): go real, after a
+route-verification groundwork task.** The client is explicitly built to the
+STUB's route shapes (`/data-exchange/v1/bibles`, `/passages`) with a code
+comment admitting three sources disagree and none were verifiable. Flipping
+`generateScriptWorkflow`'s passage-fetch e2e to the live host is therefore
+gated on a **prerequisite task**: verify the real routes/response shapes with
+the real `YOUVERSION_APP_KEY` (already wired as an env var) and correct the
+client to match. This is server-to-server with an app-level key — no
+interactive login — so once the shapes are fixed, this goes fully real. If the
+live routes differ, **the client changes, not the tests**. (The §9-Q10
+licensing posture is unaffected.)
+
+**(b) Userinfo verification (api sign-in): narrowly-scoped exception, plus an
+optional live spec.** `GET /auth/v1/userinfo` needs a live OAuth access token,
+which only comes from an interactive browser login. Resolution:
+
+- `auth.e2e.ts` keeps testing **session/bearer mechanics** (opaque tokens,
+  sliding expiry, sign-out) via the `/v1/test/seed` seam — with **zero
+  YouVersion egress**, consistent with §10.2's "real or not at all". Its
+  backwards stub dependency and hardcoded stub fallback are deleted.
+- The userinfo request/response mapping (success parse, 401 handling) moves to
+  **unit tests with injected fetch** against the documented contract.
+- A **dedicated YouVersion test account** provides an out-of-band token stored
+  as `YOUVERSION_E2E_ACCESS_TOKEN`; when set, an env-gated spec runs the real
+  `POST /v1/auth/youversion` → live userinfo round trip; when unset it skips
+  **loudly** (this is the one deliberately-optional real spec — verify at
+  implementation time whether YouVersion issues long-lived or refreshable
+  tokens, and prefer a stored refresh token if available).
+
+**Accepted risk, not resolved:** the userinfo contract — itself an invented
+contract, per `current-design.md` §5.4 — remains unproven in the *always-on*
+gating suite; a YouVersion-side contract change would surface first in real
+sign-ins (or in the optional spec when its token is fresh), not in every e2e
+run. Accepted because the alternatives are worse: a stub proves nothing about
+the real contract, and making the gating suite depend on a manually-refreshed
+third-party token makes it fail for reasons no code change caused.
+
+### 10.5 The flagship crash/replay test — replacement exactly-once proof
+
+The `generateVideoClipWorkflow` crash/replay e2e (task 34) currently proves
+no-re-submission by reading the stub's `/__stub/calls` `videoJobsCreated`
+counter. Real OpenRouter has no introspection endpoint. Replacement proof
+(§6e):
+
+1. **`providerJobId` stability.** Capture `AiGeneration.providerJobId`
+   after submit, kill the worker, restart, let the workflow run to completion —
+   assert the final row carries the **same** `providerJobId`, and that the
+   completed asset was downloaded from that job. The resumed workflow polled
+   the original provider job; it did not start a second one.
+2. **DBOS system-DB introspection.** Query the workflow's recorded step
+   executions in `supagloo_dbos` and assert **exactly one** execution of the
+   `submitVideoJob` step for `workflowID = generationId`. The submit step was
+   checkpointed once and replayed, never re-run.
+
+**Accepted risk, not resolved:** what is no longer *empirically observed* is
+"OpenRouter received exactly one create-job HTTP request." A crash landing in
+the sub-second window between the HTTP submit succeeding and the step
+checkpoint committing would re-run the step on replay, orphaning (and paying
+for) the first job — and neither assertion above would see it, because the row
+and checkpoints would only reflect the second submission. That window was
+exactly what the stub counter measured. The property now rests on the
+persist-in-same-step design, DBOS checkpoint semantics, and the
+`Idempotency-Key` header as **unverified defense-in-depth** (whether the real
+video endpoint honors it is unconfirmed). Accepted: the window is sub-second,
+the blast radius is one duplicate paid job (no correctness impact — the
+workflow tracks one `providerJobId` either way), and the only stronger proof
+would require provider-side introspection that does not exist.
+
+Incidental upside: real generation latency makes the crash window (between
+submit and completion) far easier to hit reliably than the stub's fast state
+machine did.
+
+### 10.6 Failure-injection tests move to unit level
+
+The stub-dependent deterministic-failure e2e cases — the 503-then-200 retry
+sequence, the malformed-then-valid schema-repair loop, and the async
+video-job state machine's controlled timing — are **reclassified as unit
+tests** using the injected-fetch mock pattern both backend repos already use.
+This is a reclassification, not a coverage loss: those tests simulate provider
+behavior by construction, which is definitionally not end-to-end. E2e retains,
+per workflow: the real happy path, the crash/replay durability proofs, and
+real auth/verify failures where a statically-wrong credential produces them
+deterministically. Resolution is deliberate and unambiguous: **no
+failure-injection e2e survives; no stub is retained to support one.**
+
+### 10.7 Harness simplification — docker-compose.test.yml and the stubs
+
+- **`docker-compose.test.yml`:** delete the `api` service's
+  `OPENROUTER_BASE_URL` / `GLOO_BASE_URL` / `YOUVERSION_BASE_URL` overrides
+  (real-by-default takes over); delete the `openrouter-stub`, `gloo-stub`,
+  and `youversion-stub` services. **`github-stub` and `git-server` remain
+  untouched** (out of scope), so the overlay and the shared `STUB_KIND` stub
+  image survive with two kinds instead of five.
+- **Both repos' `tests/e2e/global-setup.ts`:** stop defaulting the three
+  provider vars to localhost stub ports; instead **fail fast** when the
+  required real secrets are missing (§10.8). GitHub/git-server stub wiring
+  stays.
+- **Specs:** remove hardcoded stub-URL fallbacks from `auth.e2e.ts`,
+  `generate-*.e2e.ts`, `providers.e2e.ts`. Invert `providers.e2e.ts`'s
+  now-backwards `beforeAll` assertion: assert `env.OPENROUTER_BASE_URL` (and
+  Gloo/YouVersion) carry **no stub override** — a guard against the stub
+  pattern silently creeping back.
+- **Spec bodies — the third coupling category:** stub coupling is not only
+  URL/config wiring; the e2e test bodies themselves call constructs that do
+  not exist on real provider hosts: `/__stub/reset` + `/__stub/calls`
+  introspection (call counters such as `chatCompletions`, `tokensIssued`,
+  `videoJobsCreated`) and `/__admin/chat-script` / `/__admin/speech-script`
+  response **programming**, plus assertions on stub-fabricated literals
+  (`stub/*` discovery-catalog ids, `FAKE_MP4` magic bytes, `vid_` job-id
+  prefixes). The migration tasks must remove these, not just the URLs — an
+  implementation that only swaps base URLs would still call these endpoints
+  against real hosts and fail immediately. Resolution per kind: response
+  programming disappears with §10.6's unit-level reclassification;
+  introspection counters are replaced by real-observable proofs (persisted
+  rows, DBOS system-DB step-execution introspection — the §10.5 pattern) or
+  deleted where the property is provider-introspection-only (the
+  `Idempotency-Key` double-submit proof — §10.5 accepted risk); exact
+  programmed-content assertions become schema-valid/structural assertions.
+  Nuance: `global-setup.ts`'s `/__admin/*-script` calls are stub-image
+  **staleness probes**, not response programming — they are deleted together
+  with the three-provider stub wiring, no replacement needed.
+- **`providers.e2e.ts` disposition — rework, not delete:** it is the only
+  spec exercising real Gloo `.chat()` at the provider-primitive level (the
+  workflow e2e default to OpenRouter), a genuine coverage niche, and it
+  hosts the inverted no-stub guard — so it survives, slimmed: the OpenRouter
+  and Gloo chat round-trips (run-time-resolved model ids, schema-valid
+  result assertions) and the discovery assertions (non-empty catalogs,
+  structural shape — no `stub/*` literals) flip to real hosts; the
+  media-client section (speech/video primitives + the `Idempotency-Key`
+  double-submit test) is **deleted** as duplicative of workflow-level
+  real-host coverage (§10.2/§10.5) and, for the idempotency proof,
+  impossible without provider-side introspection.
+- **Stub sources:** delete the three provider stub kinds from `tests/stubs`
+  and their root-harness self-tests (git history preserves them; with §10.6
+  they have zero remaining consumers). Keeping dead stubs invites quiet
+  re-adoption.
+
+### 10.8 Secrets — local-dev and manual-run story (CI deferred)
+
+`.env` (gitignored) at the supagloo root and in each backend repo, with
+`.env.example` documenting: `OPENROUTER_E2E_TEST_API_KEY`,
+`GLOO_CLIENT_ID`/`GLOO_CLIENT_SECRET`, `YOUVERSION_APP_KEY` (already wired),
+and optional `YOUVERSION_E2E_ACCESS_TOKEN`. Required vars **fail the e2e
+global-setup fast with an actionable message** rather than skipping — a
+gating suite that silently skips its provider tests is a green lie. The single
+designed exception is `YOUVERSION_E2E_ACCESS_TOKEN` (§10.4b), whose spec skips
+loudly when unset. Naming caveat for implementation: in `supagloo-nextjs`,
+`GLOO_CLIENT_ID`/`GLOO_CLIENT_SECRET` already configure **Stagehand's own
+LLM** — the app-under-test's Gloo credentials need a distinct name there.
+Everything CI-shaped is §9-Q12, out of scope.
+
+### 10.9 Accepted tradeoff: cost, latency, flakiness
+
+Following Q10's pattern — **accepted risk, consciously not solved away**:
+
+- **Cost.** Every e2e run spends real money: OpenRouter LLM/media calls
+  (video generation dominates — the crash/replay test alone pays for a full
+  real video job every run) and live Gloo token mints/inference.
+- **Latency.** Suite runtime is bound by real generation time — minutes, not
+  the stub's milliseconds.
+- **Flakiness.** The gating suite can now go red for reasons no code change
+  caused: network incidents, provider outages, rate limits, model
+  deprecations, account balance exhaustion.
+
+Mitigations shape cost without diluting the policy: resolve the
+cheapest/fastest adequate models at run time via the existing discovery
+endpoints (no hardcoded ids — the standing rule), request minimal
+durations/resolutions for media, keep the dedicated key low-balance so a
+runaway suite is capped, and keep failure-injection at unit level (§10.6) so
+the expensive suite stays small. What is explicitly **not** a mitigation:
+reintroducing stubs, marking provider e2e optional, or a "fast mode" that
+skips real calls. This is the price of the requirement, accepted with eyes
+open.
 
 ---
 
 *Update 2026-07-17: user review complete — all §9 open questions resolved
 (annotations inline above). Next step in the `/design` process: commit, then
 `docs/plan.md` sequencing. Nothing in this document has been implemented.*
+
+*Update 2026-07-22: the statement above is superseded — round 1 (§1–§9) is
+fully implemented (tasks 1–34, verified). Second delta round added: §10
+(real-provider e2e policy), §6e, the §9-Q9 addendum, and §9-Q12. Round 2 is
+awaiting user review before this doc is committed and `docs/plan.md` gains its
+corresponding tasks.*
