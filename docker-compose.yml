@@ -81,6 +81,10 @@ services:
       PORT: "4000"
       HOST: 0.0.0.0
       NODE_ENV: production
+      # Required (fail-fast at boot) — shared by api + dbos, must match exactly.
+      # Well-known dev-only value (same one in supagloo-database-lib/.env.example);
+      # never use this in prod.
+      SECRETS_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
       S3_ENDPOINT: http://minio:9000
       S3_PUBLIC_ENDPOINT: http://localhost:9000
       S3_BUCKET: supagloo-dev
@@ -113,6 +117,10 @@ services:
       DATABASE_URL: postgres://supagloo:supagloo@postgres:5432/supagloo
       DBOS_DATABASE_URL: postgres://supagloo:supagloo@postgres:5432/supagloo_dbos
       NODE_ENV: production
+      # Required (fail-fast at boot) — MUST match the api service's value exactly, or
+      # decryptSecret fails with AUTH_FAILED when a generation workflow loads a
+      # provider credential. Same well-known dev-only value as db-lib's .env.example.
+      SECRETS_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
       # Task #32: the S3 (writer) vars the asset-uploading workflows use — same names as the
       # api service. dbos uploads against the internal endpoint (minio:9000); S3_PUBLIC_ENDPOINT
       # is unused by dbos (it never presigns) but kept for name-parity with the api block.
