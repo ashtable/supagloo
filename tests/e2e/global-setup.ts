@@ -10,9 +10,11 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 /**
  * The stack services the e2e suite needs healthy: Postgres + MinIO (infra), the
- * Task #8 one-shot `migrate` + Fastify `api`, and the Task #9 provider-stub
- * harness (four provider stubs + the local git smart-HTTP server). `nextjs`/
- * `dbos` are later tasks.
+ * Task #8 one-shot `migrate` + Fastify `api`, and the surviving stub harness
+ * (the GitHub REST stub + the local git smart-HTTP server). Task 34-E8
+ * (design-delta §10.7) removed the openrouter/gloo/youversion stubs — those
+ * providers are exercised for real by the backend e2e suites. `nextjs`/`dbos`
+ * are later tasks.
  */
 const INFRA_SERVICES = [
   "postgres",
@@ -21,9 +23,6 @@ const INFRA_SERVICES = [
   "migrate",
   "api",
   "github-stub",
-  "openrouter-stub",
-  "gloo-stub",
-  "youversion-stub",
   "git-server",
 ];
 
@@ -86,15 +85,9 @@ async function apiHealthy(): Promise<boolean> {
   }
 }
 
-/** All five provider stubs answer their `/__stub/health` introspection route. */
+/** Both surviving stubs answer their `/__stub/health` introspection route. */
 async function stubsReady(): Promise<boolean> {
-  const bases = [
-    PROVIDERS.githubBaseUrl,
-    PROVIDERS.openrouterBaseUrl,
-    PROVIDERS.glooBaseUrl,
-    PROVIDERS.youversionBaseUrl,
-    PROVIDERS.gitServerBaseUrl,
-  ];
+  const bases = [PROVIDERS.githubBaseUrl, PROVIDERS.gitServerBaseUrl];
   for (const base of bases) {
     try {
       const res = await fetch(`${base}/__stub/health`, {
@@ -111,8 +104,9 @@ async function stubsReady(): Promise<boolean> {
 /**
  * Ready = both logical databases accept connections (proves the pg-init script
  * ran), the `supagloo-dev` bucket exists (proves minio-init ran), the API
- * answers `GET /healthz` (proves `migrate` applied and `api` started), AND all
- * five provider stubs answer `/__stub/health` (proves the Task #9 overlay is up).
+ * answers `GET /healthz` (proves `migrate` applied and `api` started), AND the
+ * two surviving stubs (github-stub + git-server) answer `/__stub/health` (proves
+ * the test overlay is up).
  */
 async function infraReady(): Promise<boolean> {
   return (
@@ -128,7 +122,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Reuse an already-running healthy infra stack; otherwise bring up the full
- * stack (infra + api + Task #9 provider stubs, via the base + test-overlay
+ * stack (infra + api + the github-stub + git-server, via the base + test-overlay
  * compose files), wait until ready, and tear it down on teardown. Mirrors the
  * supagloo-nextjs e2e reuse-or-spawn pattern, applied to Compose.
  */
@@ -155,6 +149,6 @@ export default async function setup() {
 
   compose(["down"]);
   throw new Error(
-    "Compose stack (infra + api + provider stubs) did not become ready within 150s",
+    "Compose stack (infra + api + github-stub + git-server) did not become ready within 150s",
   );
 }

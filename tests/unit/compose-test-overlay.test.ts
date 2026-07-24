@@ -67,12 +67,14 @@ describe("docker-compose.test.yml — provider-stub overlay", () => {
   const overlay = parse(readFileSync(OVERLAY, "utf8")) as ComposeFile;
   const services = overlay.services ?? {};
 
+  // Task 34-E8 (design-delta §10.7): the three provider stubs are DELETED — the real
+  // providers (OpenRouter/Gloo/YouVersion) are exercised for real by the backend e2e
+  // suites, so a deterministic stub for them is dead infra that invites quiet re-adoption.
+  // github-stub + git-server survive (out of scope), so the shared STUB_KIND image lives
+  // on with two kinds instead of five.
   const stubs: Array<[string, string, string]> = [
     // [service, STUB_KIND, host port]
     ["github-stub", "github", "4801"],
-    ["openrouter-stub", "openrouter", "4802"],
-    ["gloo-stub", "gloo", "4803"],
-    ["youversion-stub", "youversion", "4804"],
     ["git-server", "git", "4805"],
   ];
 
@@ -93,14 +95,28 @@ describe("docker-compose.test.yml — provider-stub overlay", () => {
     });
   }
 
+  describe("the three provider stubs are gone (task 34-E8 / §10.7)", () => {
+    it.each(["openrouter-stub", "gloo-stub", "youversion-stub"])(
+      "does not define the %s service",
+      (name) => {
+        expect(services[name]).toBeUndefined();
+      },
+    );
+  });
+
   describe("api provider base-URL overrides", () => {
-    it("points the API at the internal stub URLs", () => {
+    it("still points the API at the internal github-stub URLs", () => {
       const env = envMap(services.api?.environment);
       expect(env.GITHUB_API_BASE_URL).toBe("http://github-stub:8080");
       expect(env.GITHUB_OAUTH_BASE_URL).toBe("http://github-stub:8080");
-      expect(env.OPENROUTER_BASE_URL).toBe("http://openrouter-stub:8080");
-      expect(env.GLOO_BASE_URL).toBe("http://gloo-stub:8080");
-      expect(env.YOUVERSION_BASE_URL).toBe("http://youversion-stub:8080");
     });
+
+    it.each(["OPENROUTER_BASE_URL", "GLOO_BASE_URL", "YOUVERSION_BASE_URL"])(
+      "no longer overrides the API's %s (real-by-default takes over)",
+      (key) => {
+        const env = envMap(services.api?.environment);
+        expect(env[key]).toBeUndefined();
+      },
+    );
   });
 });

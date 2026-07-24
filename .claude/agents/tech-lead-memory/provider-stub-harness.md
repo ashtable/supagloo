@@ -9,6 +9,14 @@ Built 2026-07-18 (plan task 9, completes M2). The as-built realization of
 [[e2e-test-infra-conventions]]. Deterministic outbound-provider harness every
 later e2e (tasks 10-47) points at. NEVER ships in production images.
 
+**SUPERSEDED 2026-07-23 (task 34-E8, [[task-34-e8-harness-simplification]]):** the
+openrouter/gloo/youversion stubs + all their wiring were DELETED once the
+real-provider migration (34-E1..E7) was complete. The `STUB_KIND` image now serves
+only **github + git** (2 kinds, not 5); `docker-compose.test.yml`, both backend
+`global-setup.ts`, `dev-config.ts` `PROVIDERS`, and the stub self-tests were slimmed
+accordingly. Everything BELOW about the 3 provider stubs is HISTORICAL; only the
+github-stub + git-server parts remain live.
+
 **Stub servers** live in the ROOT repo at `tests/stubs/src/` — zero-dependency
 `node:http` factories (`createGithubStub`/`createOpenRouterStub`/`createGlooStub`/
 `createYouVersionStub`/`createGitServer`), each returning a `StubHandle`

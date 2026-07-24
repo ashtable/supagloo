@@ -8,11 +8,13 @@
 # stub servers NEVER ship in a production image. The root e2e globalSetup adds
 # these `-f` flags automatically.
 #
-# Five stub services (one shared ./tests/stubs image, selected by STUB_KIND) give
-# the deterministic outbound-provider harness that tasks 10-47 point at, plus a
-# local git smart-HTTP server for real clone/push flows. The `api` override
-# demonstrates the env-overridable base-URL convention: the API reaches each
-# provider at its INTERNAL Compose-network name instead of the real internet.
+# Two stub services (one shared ./tests/stubs image, selected by STUB_KIND) — the
+# GitHub REST stub plus a local git smart-HTTP server for real clone/push flows.
+# Task 34-E8 (design-delta §10.7) DELETED the openrouter/gloo/youversion stubs: the
+# three real providers are now exercised for real by the backend e2e suites, so the
+# API needs no provider-URL override for them (real-by-default takes over). Only the
+# GitHub `api` override survives, demonstrating the env-overridable base-URL
+# convention: the API reaches GitHub at its INTERNAL Compose-network name.
 services:
   github-stub:
     build: ./tests/stubs
@@ -24,33 +26,6 @@ services:
       GIT_SERVER_INTERNAL_URL: http://git-server:8080
     ports:
       - "4801:8080"
-
-  openrouter-stub:
-    build: ./tests/stubs
-    image: supagloo-provider-stub:test
-    environment:
-      STUB_KIND: openrouter
-      PORT: "8080"
-    ports:
-      - "4802:8080"
-
-  gloo-stub:
-    build: ./tests/stubs
-    image: supagloo-provider-stub:test
-    environment:
-      STUB_KIND: gloo
-      PORT: "8080"
-    ports:
-      - "4803:8080"
-
-  youversion-stub:
-    build: ./tests/stubs
-    image: supagloo-provider-stub:test
-    environment:
-      STUB_KIND: youversion
-      PORT: "8080"
-    ports:
-      - "4804:8080"
 
   git-server:
     build: ./tests/stubs
@@ -72,9 +47,6 @@ services:
     environment:
       GITHUB_API_BASE_URL: http://github-stub:8080
       GITHUB_OAUTH_BASE_URL: http://github-stub:8080
-      OPENROUTER_BASE_URL: http://openrouter-stub:8080
-      GLOO_BASE_URL: http://gloo-stub:8080
-      YOUVERSION_BASE_URL: http://youversion-stub:8080
       GITHUB_APP_ID: "123456"
       GITHUB_APP_SLUG: supagloo-test
       GITHUB_APP_PRIVATE_KEY: "-----BEGIN RSA PRIVATE KEY-----\\nPLACEHOLDER\\n-----END RSA PRIVATE KEY-----"
