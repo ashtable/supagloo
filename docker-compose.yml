@@ -91,6 +91,17 @@ services:
       S3_ACCESS_KEY: supagloo
       S3_SECRET_KEY: supagloo-dev
       S3_REGION: us-east-1
+      # Task #11 GitHub App (design-delta §2.3). Required (fail-fast at boot) —
+      # one pair per app registration, shared by api + dbos, NOT hardcoded here
+      # since GITHUB_APP_PRIVATE_KEY/GITHUB_APP_CLIENT_SECRET are real secrets.
+      # Sourced from a root .env (gitignored; see .env.example) via Compose's
+      # built-in ${VAR} substitution. GITHUB_APP_CLIENT_ID/SECRET are api-only
+      # (Task #26 create-new-repo JIT user-auth hop — dbos has no user context).
+      GITHUB_APP_ID: ${GITHUB_APP_ID}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY}
+      GITHUB_APP_SLUG: ${GITHUB_APP_SLUG}
+      GITHUB_APP_CLIENT_ID: ${GITHUB_APP_CLIENT_ID}
+      GITHUB_APP_CLIENT_SECRET: ${GITHUB_APP_CLIENT_SECRET}
     ports:
       - "4000:4000"
     depends_on:
@@ -130,6 +141,13 @@ services:
       S3_ACCESS_KEY: supagloo
       S3_SECRET_KEY: supagloo-dev
       S3_REGION: us-east-1
+      # Task #17 GitHub App (design-delta §2.3/§7). Required (fail-fast at boot) —
+      # git-ops workflows sign App JWTs to mint installation tokens. Same real
+      # app registration as the api service's pair; sourced from the root .env
+      # (gitignored; see .env.example). dbos has no user context, so it does NOT
+      # need GITHUB_APP_SLUG/CLIENT_ID/CLIENT_SECRET (api-only, Task #26).
+      GITHUB_APP_ID: ${GITHUB_APP_ID}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY}
     depends_on:
       migrate:
         condition: service_completed_successfully
