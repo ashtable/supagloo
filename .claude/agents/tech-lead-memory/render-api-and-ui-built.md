@@ -88,6 +88,46 @@ the row it died in with `✕` (which is why `RenderState` carries `lastPhase`).
   nowhere else to live until task 41 ships "Your videos", and the 14c footer literally
   promises a notification that no designed surface provides.
 
+## Step-11 review revisions (2026-07-24, same branch pass)
+
+Four defects found in review and fixed on the same branches:
+
+- **A `state`-read in-flight guard is ALWAYS wrong in a provider callback.**
+  `startRender` opened with `if (state.render) return`. `startRender` is a function
+  object created during a React render, closed over THAT render's immutable `state`
+  snapshot; `onClose()`/`cancelRender()` only DISPATCH, so they can never clear it for
+  the closure that reads it next. The failure card's `Try again ▸` (the only
+  failure-recovery path) was therefore dead. **`flushSync`/unbatching would not fix
+  this — it is closure capture, not batching.** Fix: a `RenderRunGate` in a `useRef`
+  (`lib/studio/render-model.ts`, unit-tested U-RM20..23 — the nextjs unit config is
+  `environment: "node"` with no jsdom, so the provider itself is not
+  component-testable). Rules that are easy to get wrong: `finishRenderRun` must be
+  CONDITIONAL on the run token (a late `finally` from an abandoned driver must not clear
+  a newer render's gate), and `cancelRender`/`closeRender` must ALSO release — a
+  cancelled poll loop lives for the full 30-minute budget, so a gate held there just
+  trades one dead button for another. The run token also fences `renderOutcome` /
+  `RENDER_DOWNLOAD_READY`, which (unlike `RENDER_POLLED`) carry no reducer id guard.
+- **Ordering assertions need ONE shared timeline.** `renders-service.test.ts` recorded
+  Prisma ops into `calls` but enqueue/cancel into private arrays, so neither
+  write-before-enqueue nor cancel-before-write was actually observable; both "ordering"
+  tests passed with the order inverted. The recorders now push `dbos.enqueue` /
+  `dbos.cancel` / `s3.presignDownload` onto `calls`, and `at(calls, op)` THROWS on a
+  missing op (`findIndex` → -1 makes `toBeLessThan` pass vacuously). Verified by
+  actually inverting the implementation three ways.
+- **`expect(x).not.toEqual(expect.arrayContaining([a,b,c]))` is not "contains none of".**
+  `arrayContaining` requires ALL members, so the negation passes when ANY one is absent —
+  the cancel race-guard test would have let `completed` leak into the cancelable set.
+  Use an exact sorted-set comparison (and `CANCELABLE_RENDER_STATUSES` is now exported
+  for that).
+- **`studio-render-real.e2e.ts`'s zero-egress claim was false.** It said the manifest
+  carries cached audio refs; every test there creates a FRESH project, so the manifest is
+  `buildBlankManifest()` (`scenes: []`, no `narratorVoice.assetKey`, no `music`). Egress
+  is zero because dbos `render/audio.ts` `planAudioTrack` resolves BOTH plans to
+  `skipped` on a blank manifest. Flip side, now documented in the spec: a zero-scene
+  manifest generates `durationInFrames={1}`, so the spec proves the plumbing (clone →
+  install → bundle → encode → upload → presign) over an empty frame and never exercises
+  the `cached` audio branch.
+
 See [[render-workflow-built]] and [[render-workflow-gotchas]] for the task-36 worker this
 API enqueues into, and [[in-flight-dblib-e2e-constraint]] for the pin discipline that
 unblocked the api repo here.
