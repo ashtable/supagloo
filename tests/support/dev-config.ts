@@ -45,23 +45,19 @@ export const API = {
   baseUrl: process.env.API_BASE_URL ?? "http://localhost:4000",
 } as const;
 
-/**
- * Host-reachable base URLs of the surviving stub harness (the
- * `docker-compose.test.yml` overlay). Dual-endpoint scheme, same reasoning as
- * S3: the API/DBOS containers reach the stubs at their INTERNAL Compose-network
- * names (`http://github-stub:8080`, set by the overlay), while this host-run
- * self-test reaches them at their published host ports below. Env-with-default
- * so the suite runs out-of-the-box against the overlay.
+/*
+ * There is deliberately NO `PROVIDERS` export any more.
  *
- * Task 34-E8 (design-delta §10.7) removed the openrouter/gloo/youversion stub
- * base URLs — those providers are exercised for real by the backend e2e suites,
- * so no host-run stub self-test remains for them. Only github-stub + git-server
- * survive.
+ * It held the host-reachable base URLs of the stub harness. Task 34-E8 (design-delta
+ * §10.7) removed the openrouter/gloo/youversion entries; task 62 (§11, D20) deleted the
+ * last two with `tests/stubs/**` itself, so EVERY provider — OpenRouter, Gloo,
+ * YouVersion and now GitHub — is exercised for real by the e2e suites. There is no
+ * stub base URL left to point at, and nothing may reintroduce one:
+ * `tests/unit/compose-test-overlay.test.ts` fails if the overlay pins a GitHub base URL.
+ *
+ * Host-side real-GitHub e2e credentials and helpers live in
+ * `tests/support/e2e-github-api.mjs` instead, which reads the untracked root `.env`.
  */
-export const PROVIDERS = {
-  githubBaseUrl: process.env.GITHUB_STUB_URL ?? "http://localhost:4801",
-  gitServerBaseUrl: process.env.GIT_SERVER_STUB_URL ?? "http://localhost:4805",
-} as const;
 
 /**
  * Build an S3 client for MinIO. Defaults to the PUBLIC (host-reachable)

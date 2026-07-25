@@ -53,10 +53,79 @@ docker compose up --build
 
 Then open [http://localhost:8000](http://localhost:8000).
 
-Currently this builds and runs the `supagloo-nextjs` submodule. Services for `supagloo-nodejs-api` and `supagloo-nodejs-dbos` are not yet wired into Compose.
+`docker-compose.yml` brings up Postgres (both logical databases), MinIO, the one-shot
+`migrate` and `minio-init` jobs, the Fastify `api`, the DBOS worker (`dbos`) and `nextjs`.
+Copy `.env.example` to `.env` first — several services fail fast at boot without the
+credentials it documents.
 
 ### Keeping submodules up to date
 
 ```bash
 git submodule update --remote --merge
 ```
+
+## Testing
+
+```bash
+npm run test:unit   # pure-logic: parses the compose files + the init scripts. No Docker.
+npm run test:e2e    # drives the REAL Compose stack (reuse-or-spawn), then tears it down.
+```
+
+`docker-compose.test.yml` is a **test-enablement overlay**, applied explicitly with
+`-f` (Docker never auto-merges a `.test.yml`). It is not optional and not vestigial: it
+carries the `NODE_ENV: development` + `SUPAGLOO_ENABLE_TEST_SEED=1` double-gate that the
+api's `POST /v1/test/seed` route requires, plus the api's MinIO wiring. Read its header
+before changing it.
+
+### Every provider is REAL in e2e — including GitHub
+
+There are no provider stubs. `tests/stubs/**` and its `github-stub` / `git-server`
+services were deleted: every e2e lane in all four repos reaches real
+`github.com` / `api.github.com`, exactly as production does. **Unit suites keep their
+stubs and mocks — no unit lane makes network egress.**
+
+Two consequences worth knowing before you run a suite:
+
+1. **The git-ops e2e lanes no longer run offline.** This is an accepted, deliberate cost:
+   the alternatives (keeping dead stubs around, marking the lane optional, adding a
+   "fast mode") all quietly re-admit the class of bug this replaced — a suite that passes
+   against a fixture the real host would have rejected.
+2. **Each run creates throwaway private repos** named
+   `supagloo-e2e-delete-me-<slug>-<runid>` in the account where the GitHub App is
+   installed, using `GITHUB_E2E_PAT_TOKEN` from your `.env`. A PAT is needed because the
+   App installation grants no `administration` permission, so an installation token can
+   neither create nor archive a repository. Roughly 15-20 repos per full sweep.
+
+There is **no in-suite teardown**, by design: you almost always need the repo to debug a
+red run, and the target account also holds real repos. Reclaim them yourself:
+
+```bash
+npm run cleanup:github-e2e -- --dry-run   # just list the candidates
+npm run cleanup:github-e2e                # confirm each repo, then ARCHIVE it
+```
+
+The script **archives, never deletes**, asks about **one repo at a time**, and re-checks
+the `supagloo-e2e-delete-me-` prefix immediately before it mutates anything — a repo
+failing that check is never touched even if you answer "yes". There is intentionally no
+`--yes-to-all`, which also means it cannot run in CI: reclamation is a human action.
+
+The prefix itself lives in exactly one authored file,
+`tests/support/e2e-github-naming.mjs`; the other three repos import it rather than
+re-typing it, and `tests/unit/e2e-prefix-single-source.test.ts` greps all four checkouts
+to keep it that way. The App **installation id is discovered at runtime** — set
+`SUPAGLOO_E2E_GITHUB_OWNER` only if the App is installed for more than one account.
+
+### The nextjs e2e lanes are split three ways
+
+`supagloo-nextjs` separates its Stagehand specs by what they need, so the cheap lane stays
+runnable without Docker:
+
+| lane | script | needs |
+| --- | --- | --- |
+| mock | `npm run test:e2e` | `next dev` only |
+| real stack | `npm run test:e2e:real` | Compose + the DBOS worker + real GitHub creds |
+| heavy render | `npm run test:e2e:render` | the same, and runs for many minutes |
+
+Do not run the `supagloo-nodejs-dbos` e2e lanes and the nextjs render lane at the same
+time: the dbos crash/replay specs kill and restart the worker, which the render lane is
+relying on mid-scaffold.

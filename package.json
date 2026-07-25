@@ -7,7 +7,8 @@
   "scripts": {
     "test": "vitest run",
     "test:unit": "vitest run",
-    "test:e2e": "vitest run --config vitest.e2e.config.ts"
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "cleanup:github-e2e": "node scripts/cleanup-e2e-repos.mjs"
   },
   "devDependencies": {
     "@aws-sdk/client-s3": "^3.717.0",
