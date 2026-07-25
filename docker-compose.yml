@@ -148,6 +148,17 @@ services:
       # need GITHUB_APP_SLUG/CLIENT_ID/CLIENT_SECRET (api-only, Task #26).
       GITHUB_APP_ID: ${GITHUB_APP_ID}
       GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY}
+      # Task #36 renderWorkflow (design-delta §7 workflow 9). All OPTIONAL — the env
+      # schema supplies generous defaults for the three child-process kill deadlines
+      # (real sizing/timeout tuning is the load-testing task 45, §9-Q8), and the two
+      # fallback audio models are deliberately unset by default: model ids are never
+      # hardcoded (§10.9), and an unset model means the render proceeds without that
+      # track rather than failing. Sourced from the root .env when present.
+      RENDER_MEDIA_TIMEOUT_SECONDS: ${RENDER_MEDIA_TIMEOUT_SECONDS:-3600}
+      RENDER_BUNDLE_TIMEOUT_SECONDS: ${RENDER_BUNDLE_TIMEOUT_SECONDS:-900}
+      RENDER_INSTALL_TIMEOUT_SECONDS: ${RENDER_INSTALL_TIMEOUT_SECONDS:-900}
+      RENDER_NARRATION_MODEL: ${RENDER_NARRATION_MODEL:-}
+      RENDER_MUSIC_MODEL: ${RENDER_MUSIC_MODEL:-}
     depends_on:
       migrate:
         condition: service_completed_successfully
