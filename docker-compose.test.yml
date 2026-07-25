@@ -39,17 +39,33 @@ services:
 
   # Forward-looking: point the API at the internal stub URLs (the convention this
   # task establishes in src/config/env.ts). The Task #11 GitHub connection routes
-  # consume the GitHub App vars below; the containerized-API full-stack e2e is
-  # deferred until the db-lib submodule bump (the in-process API e2e supplies its
-  # own generated key meanwhile), so GITHUB_APP_PRIVATE_KEY here is a placeholder —
-  # replace it with a real test RSA key (escaped \n) when that e2e is enabled.
+  # consume the GitHub App vars below. The containerized-API full-stack e2e is now
+  # ENABLED (it is how the nextjs real-stack Stagehand specs run), and the task-10
+  # test-seed gates are set at the bottom of this block.
+  #
+  # GITHUB_APP_PRIVATE_KEY is deliberately NOT overridden here: it is a real secret,
+  # so it stays in the untracked root .env and reaches the api via the base
+  # docker-compose.yml's `${GITHUB_APP_PRIVATE_KEY}` substitution — same as dbos.
+  # Never inline PEM material into this file; it is tracked in git.
   api:
     environment:
       GITHUB_API_BASE_URL: http://github-stub:8080
+      # KNOWN COSMETIC ARTIFACT (harness-only, not a product bug): this value is
+      # used BOTH server-side (POST .../login/oauth/access_token from inside the api
+      # container) and as a BROWSER redirect target (.../login/oauth/authorize, and
+      # the install-picker URL). A Compose-internal hostname only satisfies the
+      # former, so during e2e the browser's fire-and-forget authorize popup shows
+      # DNS_PROBE_FINISHED_NXDOMAIN for `github-stub`. That is EXPECTED and does not
+      # fail anything: tests/e2e/connect-helpers.ts never uses that popup — it drives
+      # a throwaway page straight to the client callback, simulating GitHub's
+      # redirect-back. Production is unaffected (there this is https://github.com,
+      # reachable by both browser and server). Do NOT "fix" it by pointing at
+      # localhost:4801 — that breaks the server-side token exchange, since localhost
+      # inside the container is the container. A real fix would need a host
+      # /etc/hosts entry for `github-stub` or a public/internal split like S3's.
       GITHUB_OAUTH_BASE_URL: http://github-stub:8080
       GITHUB_APP_ID: "123456"
       GITHUB_APP_SLUG: supagloo-test
-      GITHUB_APP_PRIVATE_KEY: "-----BEGIN RSA PRIVATE KEY-----\\nPLACEHOLDER\\n-----END RSA PRIVATE KEY-----"
       # Task #26 create-new-repo JIT hop — api-only, placeholder like the App-JWT
       # trio above (github-stub doesn't validate these against a real registry).
       GITHUB_APP_CLIENT_ID: supagloo-test-client-id
@@ -65,3 +81,13 @@ services:
       S3_ACCESS_KEY: supagloo
       S3_SECRET_KEY: supagloo-dev
       S3_REGION: us-east-1
+      # Task #10's flag-gated `POST /v1/test/seed` seam, which every nextjs
+      # real-stack Stagehand spec obtains its session through (plan.md task 23:
+      # "obtain a *real* session via the flag-gated POST /v1/test/seed instead of
+      # faking browser state"). The endpoint hard-404s unless BOTH gates pass, and
+      # neither was ever set for the containerized API: the base compose pins
+      # NODE_ENV: production (and the Dockerfile bakes ENV NODE_ENV=production),
+      # and no compose file set the flag at all. Both belong HERE, in the test
+      # overlay, which never ships in a production image.
+      NODE_ENV: development
+      SUPAGLOO_ENABLE_TEST_SEED: "1"

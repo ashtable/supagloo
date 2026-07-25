@@ -34,7 +34,9 @@ genuine bug that only surfaced once the fake resolution was removed).
    "the trap" below) — such as `supagloo-nodejs-dbos` and `supagloo-nodejs-api` —
    update that ARG default to the SAME sha in the SAME commit as the submodule bump.**
    A dedicated test (`dockerfile-database-lib-pin.test.ts`, present in both repos)
-   enforces this; skipping it leaves `main` in a state where a real Railway build
+   enforces this; **note it reads the git-RECORDED submodule pointer, so it still
+   fails until you `git add <submodule-path>` — fast-forwarding the nested checkout
+   alone is not enough. Stage the bump, then run the guardrail.** skipping it leaves `main` in a state where a real Railway build
    would clone a different db-lib commit than the one the submodule pin records.
 5. Only now implement/run the consumer repo's tests — they resolve the real,
    pinned, rebuilt dependency, with zero local-only shortcuts.

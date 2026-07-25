@@ -70,6 +70,10 @@ two — the hosted install URL is addressed by the app's *slug*, which can't be
 derived from the numeric id, so a third var was necessary). App-level, NOT per-user
 → bypass §2.10 encryption. Making them required forced `env.test.ts` onto a
 `validEnv()` base helper. Escaped-`\n` PEM normalized at the client, not in env/db-lib.
+**SUPERSEDED 2026-07-25** — that last sentence was a latent production bug for
+DBOS (which has no client layer and never normalized). Normalization now lives in
+db-lib's `signAppJwt`; see [[github-app-pem-normalization]]. The api's own
+`normalizePrivateKey` remains, now redundant-but-harmless.
 
 **Stub changes** (`tests/stubs/src/github-stub.ts`): (1) `GET
 /app/installations/:id` now ENFORCES a present App-JWT (`hasAppJwt`, 401 otherwise
