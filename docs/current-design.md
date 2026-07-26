@@ -293,10 +293,19 @@ graph TD
 All provider base URLs default to the **real** hosts in both services' env
 loaders (`https://openrouter.ai`, `https://platform.ai.gloo.com`,
 `https://api.youversion.com`, `https://api.github.com` / `https://github.com`)
-— "real-by-default ⇒ prod needs zero config". **Nothing overrides them any
-more**, in any lane: the provider-stub harness this diagram used to carry a
-`Stubs` node for is deleted in full (§5). Per-user OpenRouter/Gloo credentials
-live encrypted in Postgres rows, never in env config.
+— "real-by-default ⇒ prod needs zero config". The provider-stub harness this
+diagram used to carry a `Stubs` node for is deleted in full (§5), and **no lane
+overrides a provider base URL** any more — with exactly one deliberate exception,
+added by plan row 66 and named so it cannot be mistaken for stub wiring: the api
+also takes **`GITHUB_OAUTH_INTERNAL_BASE_URL`**, the SERVER-side half of the
+user-authorization host, which the test overlay points at the api itself
+(`http://api:4000`) so the containerised api can complete the create-new-repo
+code→token hop against its own double-gated test-only route. The PUBLIC
+`GITHUB_OAUTH_BASE_URL` — the URL the *browser* opens — is still overridden
+nowhere, which is the property that keeps row 62 item (e)'s
+`DNS_PROBE_FINISHED_NXDOMAIN` dissolved. Unset, the internal one resolves to the
+public one, so production still needs zero config. Per-user OpenRouter/Gloo
+credentials live encrypted in Postgres rows, never in env config.
 
 ## 4. Sequence Diagrams (as implemented today)
 
@@ -335,13 +344,13 @@ sequenceDiagram
     participant GH as GitHub (App API + git)
 
     opt create-new-repo path
-        UI->>GH: JIT user-auth redirect (zero-storage\ntoken hop, API-side exchange) → repo created
+        UI->>GH: JIT user-auth redirect (zero-storage\ntoken hop, API-side exchange) → repo created\n(auto_init: true — the repo has a real main)
     end
     UI->>API: POST /v1/projects (via BFF)
     API->>DB: create Project + ProjectJob\n(409 if a git-ops job is already in flight)
     API->>DB: DBOSClient.enqueue(scaffoldProjectWorkflow,\nworkflowID = jobId)
     W->>GH: mint installation token → verify repo access
-    W->>GH: clone → write Remotion scaffold →\ncommit v0.0.0 → push → PR → merge →\ncut working branch v0.0.1
+    W->>GH: clone → bootstrap main if the repo is\ncommit-less (existing-empty path) → write\nRemotion scaffold → commit v0.0.0 → push →\nPR → merge → cut working branch v0.0.1
     W->>DB: idempotent stage writes; finalize\nProject/ProjectVersion rows
     loop poll
         UI->>API: GET /v1/projects/:id/jobs/:jobId
@@ -468,9 +477,25 @@ overlay** (still explicit-`-f` only, never auto-merged into a plain
   http://localhost:9000` is load-bearing: the render spec's presigned download
   runs **in the browser**, which cannot resolve the `minio` hostname.
 
-No GitHub variable appears in it at all. `docker-compose.yml` already substitutes
-the five real `GITHUB_APP_*` from the untracked root `.env`, and the base URLs
-default to the real hosts.
+- **two** GitHub variables, both from plan row 66 and both named in the overlay's
+  own header: `GITHUB_OAUTH_INTERNAL_BASE_URL: http://api:4000` (the SERVER-side
+  half of the user-authorization host — the api calls itself; deliberately no new
+  container) and `GITHUB_E2E_EXCHANGE_TOKEN: ${GITHUB_E2E_EXCHANGE_TOKEN}`, the
+  narrow credential its double-gated test-only exchange route hands back. Neither
+  is a stub: everything after the exchange, including `POST /user/repos`, is real.
+
+No OTHER GitHub variable appears in it. In particular the PUBLIC
+`GITHUB_OAUTH_BASE_URL` is still absent everywhere — it is the browser's redirect
+target and must resolve from the user's machine. `docker-compose.yml` already
+substitutes the five real `GITHUB_APP_*` from the untracked root `.env`, and the
+base URLs default to the real hosts. `GITHUB_E2E_PAT_TOKEN` still never enters any
+container; row 66 minted a SECOND, SEPARATE token precisely so that stayed true.
+"Separate" is the accurate word, not "narrower": no GitHub credential can create
+repositories without also being able to delete them, so the exchange token is a
+classic `repo` PAT like the harness one — a distinct, independently revocable value,
+gated behind a route that does not exist in production and that checks the caller's
+App client secret. Design-delta §11.8 carries the full accounting and the residual
+risk.
 
 What stands in for the stubs, per provider:
 
@@ -497,11 +522,19 @@ What stands in for the stubs, per provider:
 The app is **real-by-default**: `supagloo-nodejs-api/src/config/env.ts` and
 `supagloo-nodejs-dbos/src/config/env.ts` define every provider base URL with the
 real host as the zod `.default()`. Today that default is simply *used* — the
-delta was **removing** the test-side overrides, not adding config. Two permanent
-unit guards keep it that way: an inverted overlay test asserting
-`docker-compose.test.yml` defines no stub service and no `GITHUB_*` key, and a
-`providers.e2e.ts` `beforeAll` asserting the AI-provider base URLs carry no stub
-override.
+delta was **removing** the test-side overrides, not adding config. Plan row 66 is
+the one place that adds any back, and it adds exactly two lines to the api service
+(§8, the OAuth public/internal split); it is called out here rather than left to be
+rediscovered as drift.
+
+Two permanent unit guards keep it that way: an inverted overlay test asserting
+`docker-compose.test.yml` defines no stub service and — over **every** `GITHUB_*`
+key present, not a fixed forbidden list — no GitHub variable beyond the two row-66
+exceptions it names explicitly, plus positive assertions that the internal base is
+set and the PUBLIC one is not; and a `providers.e2e.ts` `beforeAll` asserting the
+AI-provider base URLs carry no stub override, and that no dbos-visible GitHub
+variable names a local host (dbos has no OAuth base URL at all — the row-66
+variable is api-only, by design).
 
 What tests *do* need is **credentials and fixtures**:
 
@@ -556,7 +589,7 @@ These are load-bearing properties of today's test suite:
    empirically observed (design-delta §10.5's accepted risk). `importProject` has
    only axis (a) by nature — it is read-only, so there is no artifact to count.
 2. **Real GitHub leaves durable third-party side effects.** Every full sweep
-   creates ~15-20 private `supagloo-e2e-delete-me-*` repos in a **personal
+   creates ~18-23 private `supagloo-e2e-delete-me-*` repos in a **personal
    account that also holds the project's real repos**, reclaimed only by a human
    running the interactive cleanup script. Mitigated only by the unmistakable
    prefix, private visibility, the stamped description, archive-never-delete, and
@@ -568,17 +601,27 @@ These are load-bearing properties of today's test suite:
    bound by real latency — the wizard's readiness wait is 240 s against wireframe
    12a's designed ~20 s local ideal — and the gating suite can go red for reasons
    no code change caused: provider outages, rate limits, GitHub incidents.
-4. **The create-new-repo path is uncovered end to end, and is a real product
-   defect.** `createUserRepo` sends no `auto_init`, so the repo it creates has no
-   `main` and the scaffold's `base: "main"` PR 422s against real GitHub — masked
-   for a year by the stub claiming `default_branch: "main"` while a *separate*
-   git-server fixture seeded an actual `main`. The api-level spec keeps the server
-   half real by injecting a `fetchImpl` that intercepts **only** the OAuth token
-   exchange; the mock lane keeps the client half; the browser round trip in
-   between is uncovered because the one container-level seam
-   (`GITHUB_OAUTH_BASE_URL`) is simultaneously the browser's redirect target.
-   Tracked as plan rows **63** (the defect) and **66** (the split that would
-   restore the browser coverage).
+4. ~~**The create-new-repo BROWSER leg is uncovered end to end**~~ — **CLOSED by
+   plan rows 63 and 66; the product defect underneath it is fixed too.** The defect
+   was real: `createUserRepo` sent no `auto_init`, so the repo it created had no
+   `main` and the scaffold's `base: "main"` PR 422'd against real GitHub — masked for
+   a year by the stub claiming `default_branch: "main"` while a *separate* git-server
+   fixture seeded an actual `main`. **Plan row 63 closed the defect with both
+   halves**: the api sends `auto_init: true`, and `scaffoldProjectWorkflow`
+   bootstraps an unborn base ref itself, so the *existing*-empty-repo path (wireframe
+   13a) — which has no create call at all — works too. `dbos
+   scaffold-project.e2e.ts` now scaffolds a deliberately commit-less repo to
+   `succeeded`. **Plan row 66 then closed the BROWSER coverage gap**, by splitting
+   the overloaded seam rather than working around it: `GITHUB_OAUTH_BASE_URL` stays
+   PUBLIC (the browser's redirect target, still real github.com) and a new
+   `GITHUB_OAUTH_INTERNAL_BASE_URL` carries the SERVER-side exchange, which the test
+   overlay points at the api itself so a double-gated test-only route answers it.
+   `nextjs project-wizards-real.e2e.ts` **E-RNP1b** now drives the full 11-hop round
+   trip green, with exactly one hop simulated — a human clicking "Authorize", the
+   same §10.2 exception the OpenRouter/YouVersion helpers use. `POST /user/repos`
+   and the whole scaffold are real. The residual cost is that this puts one GitHub
+   credential inside the api container under the test overlay; see design-delta
+   §11.8 for what that credential can actually do and what limits it.
 5. **Two YouVersion contracts remain imperfectly verified.** The Data Exchange
    client's routes were corrected against the live API (task 34-E5), but the
    sign-in verifier is still built to an invented `GET /auth/v1/userinfo`
@@ -586,26 +629,44 @@ These are load-bearing properties of today's test suite:
    item 1). `auth.e2e.ts` tests session/bearer mechanics with **zero** YouVersion
    egress; the live round trip is an env-gated spec that skips when its token is
    unset.
-6. **Repo emptiness is derived from `size === 0`**, which GitHub reports in KB
-   and computes asynchronously. Correct for fixtures the harness just created (a
-   live probe confirmed small real repos report `size: 0`), but the wizard's "use
-   existing empty repo" tab makes it load-bearing in production. Tracked as plan
-   row 65.
+6. ~~**Repo emptiness is derived from `size === 0`**~~ — **CLOSED by plan row
+   65.** GitHub reports `size` in KB and computes it asynchronously, so it lags
+   upward: `size > 0` is definitive not-empty, `size === 0` is only a candidate.
+   The api now resolves candidates with `GET /repos/:o/:r/commits?per_page=2`
+   (409 or ≤1 commit ⇒ empty; ≥2 ⇒ not empty; any other answer ⇒ fall back to
+   `size`), bounded at 8 in flight and skipped entirely when there are no
+   candidates. The `≤1 commit ⇒ empty` clause is deliberate: an `auto_init` repo
+   (one README commit) is still a valid scaffold target, which is what wireframe
+   13a's selectable "Empty · created just now" designs.
 7. **No CI exists in any of the five repos** (no `.github/workflows` anywhere),
    so there is no secrets-into-CI story and nothing is gated automatically —
    every suite is run by a human. Design-delta §9-Q12. Naming caveat that still
    holds: in `supagloo-nextjs`, `GLOO_CLIENT_ID`/`GLOO_CLIENT_SECRET` configure
    **Stagehand's own LLM**, and the app-under-test's Gloo credentials use
    distinct names.
-8. **The nextjs mock lane is flaky** — one spec fails roughly half of runs, in
-   two unrelated ways (a CDP layout error, and a 6 s wait the mock commit path
-   misses about a third of the time). Pre-existing, unrelated to provider work,
-   and tracked as plan row 68. Until it lands, a single green mock-lane run is
-   weak evidence.
+8. **The nextjs mock lane was flaky, and the originally-recorded diagnosis was
+   wrong on both counts.** The two signatures (a CDP `-32000 Node does not have a
+   layout object`, and `data-dirty="false" never became "true" within 6000ms`)
+   were **one bug**, not two, and neither was a timeout being too tight: the
+   spec's `gotoStudio` waited on `studio-frame`, which is **SSR'd**
+   (`app/studio/[id]/page.tsx` → `studio-app.tsx`), so its presence is in the
+   first HTML byte and is not a post-hydration signal. It returned while React
+   was cold, and from there a dispatched `input` event reached no `onChange` (so
+   the dirty flag never flipped — the event was LOST, not slow; the mock commit
+   path is 320 ms and the observed flip latency 0–16 ms, so raising the 6 s
+   constant would have been a no-op) and a click measured a node with no layout
+   box. Measured 2/16 navigations against a warm `next dev`, 100 % correlated
+   with the frame having no `__reactProps$` key. Fixed under plan row 68 by a
+   shared hydration gate in `supagloo-nextjs/tests/e2e/helpers.ts` — poll for a
+   non-zero bounding box **and** a `__reactProps$` key — applied to both
+   `gotoStudio` copies and the three latent fixed-sleep sites in
+   `studio.e2e.ts`. The standing rule it encodes: **wait on a mount-gated testid
+   or an explicit hydration predicate, never on an SSR'd one.**
 
 ## 6. Gaps / Not Yet Implemented
 
-Per `docs/plan.md` (tasks 39–56 and 59–61 / 63–68 not done):
+Per `docs/plan.md` (tasks 39–56 and 59–61 not done; **63–68 are now DONE** — see
+the closed-out entry at the end of this list):
 
 - **Gallery (39–41).** No gallery endpoints, upvotes, or UI; `GalleryItem` /
   `GalleryUpvote` exist only as schema rows.
@@ -627,14 +688,31 @@ Per `docs/plan.md` (tasks 39–56 and 59–61 / 63–68 not done):
   (55) and the JWT-claims sign-in contract (56); render failure-card copy
   fidelity (59); render driver lifecycle — cancel during the start window (60);
   a zero-egress heavy-lane render fixture with real duration (61).
-- **Real-GitHub follow-ups (63–68)**, surfaced by task 62 and deliberately not
-  absorbed into it: **create-new-repo yields an unborn `main`, so the product's
-  headline designed path cannot scaffold against real GitHub (63 — a real
-  product defect, the highest-severity of the block)**; `403 + Retry-After` /
-  `429` handling in the GitHub clients (64); the `empty = size === 0`
-  derivation (65); the OAuth public/internal base-URL split that would restore
-  browser-level create-new-repo coverage (66); the accumulating-fixture-repo
-  cost (67, an accepted operational cost); and the flaky nextjs mock lane (68).
+- ~~**Real-GitHub follow-ups (63–68)**~~ — **ALL SIX CLOSED**, and they are no
+  longer gaps. They are listed here only so a reader arriving at this section from
+  an older revision is not left believing otherwise; §5.4 above carries the detail
+  for each:
+  - **63 — CLOSED.** `createUserRepo` sends `auto_init: true` **and**
+    `scaffoldProjectWorkflow` bootstraps an unborn base ref, so both the create-new
+    and the existing-empty (wireframe 13a) paths scaffold against real GitHub. No
+    `ProjectVersion` schema change was involved — `prNumber` was already nullable at
+    every layer.
+  - **64 — CLOSED.** `403 + Retry-After` / `429` handling lives in db-lib's
+    `withGithubRetry`, consumed by four callers (the API's user-auth client is a
+    fifth and is deliberately unwrapped — design-delta §7).
+  - **65 — CLOSED.** `empty` is no longer `size === 0`; `size === 0` is a candidate
+    resolved by a bounded commits probe.
+  - **66 — CLOSED.** The OAuth public/internal base-URL split plus a double-gated,
+    client-secret-checked test-only exchange route; `nextjs` E-RNP1b drives the whole
+    browser round trip green.
+  - **67 — CLOSED as documentation**, the accepted operational cost re-measured
+    rather than re-argued (design-delta §11.9). The first reading found 180 of 563
+    owned repos matching the fixture prefix, all created inside a ~14-hour window,
+    **0 archived** — the cleanup script had never been run. It has since been run:
+    **199 archived** interactively, leaving 19 active of 218 prefixed. The
+    reclamation path is therefore demonstrated, not just documented.
+  - **68 — CLOSED.** The nextjs mock-lane flake was one bug, not two: a shared
+    hydration gate replaced waiting on an SSR'd testid.
 - **Live-provider verification.** The remaining gaps are narrow and named: the
   invented YouVersion sign-in contract (plan row 56 item 1) and the video
   `Idempotency-Key` assumption (design-delta §10.5's accepted risk). Everything

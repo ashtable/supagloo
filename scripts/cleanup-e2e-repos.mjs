@@ -33,14 +33,18 @@ import {
  * `tests/unit/cleanup-e2e-repos.test.ts` with an injected `fetch` and a scripted stdin:
  *
  *  1. ARCHIVE ONLY. `PATCH /repos/:owner/:repo {"archived": true}`. This script NEVER
- *     issues a DELETE. Archiving is reversible; deletion is not. (`.env.example`
- *     documents the `delete_repo` PAT scope for completeness; nothing here uses it.)
+ *     issues a DELETE. Archiving is reversible; deletion is not. Nothing in this
+ *     project uses the `delete_repo` PAT scope, and `.env.example` tells you not to
+ *     grant it — there is no hard-delete escape hatch here, by design.
  *
  *  2. PER-REPO INTERACTIVE CONFIRMATION. One prompt per repo, showing the full
  *     owner/name, visibility, dates and the stamped description so the answer is
  *     informed. There is NO `--yes-to-all`: a non-interactive fast path would defeat the
  *     review step, which is the whole point. That means it cannot run in CI — an
- *     accepted, recorded cost (plan row N5).
+ *     accepted, recorded cost (**plan row 67**, which is what the provisional
+ *     "row N5" in an earlier revision of this comment became; row 67 has since
+ *     closed as documentation, with the accounting re-measured in design-delta
+ *     §11.9 rather than the cost re-argued).
  *
  *  3. THE PREFIX IS A HARD GATE, RE-CHECKED AT THE MUTATION SITE. `isE2eRepoName` is
  *     imported from `tests/support/e2e-github-naming.mjs` — the ONE authored home of the

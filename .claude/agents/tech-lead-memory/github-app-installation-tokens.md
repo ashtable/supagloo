@@ -1,6 +1,6 @@
 ---
 name: github-app-installation-tokens
-description: GitHub App (not OAuth app); store only installationId, mint short-lived installation tokens on demand; the JIT zero-storage create-new-repo hop — and the two real-GitHub findings task 62 made about it (missing auto_init = plan row 63; 200-with-error exchange)
+description: GitHub App (not OAuth app); store only installationId, mint short-lived installation tokens on demand; the JIT zero-storage create-new-repo hop — and the two real-GitHub findings task 62 made about it, both now FIXED (missing auto_init = plan row 63, closed; 200-with-error exchange, closed in task 62)
 metadata:
   type: decision
 ---
@@ -38,16 +38,28 @@ first git step is therefore `ensureRepoAccessible` (idempotent reachability
 check), **not** `createGithubRepo`. **Refresh-token storage was considered and
 rejected** (reintroduces a per-user credential at rest for a one-time op).
 
-**VERIFIED AGAINST REAL GITHUB 2026-07-25 (task 62), with two findings:**
+**VERIFIED AGAINST REAL GITHUB 2026-07-25 (task 62), with two findings — BOTH NOW
+FIXED. Read the resolution before acting on the symptom:**
 
-1. **`createUserRepo` sends no `auto_init`**, so the repo it creates has zero
-   commits and no `main` ref — and `scaffoldProjectWorkflow` then opens its base
-   PR with `base: "main"`, which real GitHub **422s**. The designed create-new
-   path therefore does not work end to end today. The task-9 stub hid this
-   completely by claiming `default_branch: "main"` in its create response while a
-   SEPARATE git-server fixture independently seeded a real `main` — two fake
-   backends sharing no storage. **Plan row 63**; a correct fix is a design
-   decision (it touches `ProjectVersion`'s PR-number nullability), not a patch.
+1. ~~**`createUserRepo` sends no `auto_init`**~~ — **FIXED by plan row 63.** As task
+   62 found it, the repo `createUserRepo` created had zero commits and no `main`
+   ref, so `scaffoldProjectWorkflow`'s base PR (`base: "main"`) **422'd** against
+   real GitHub and the designed create-new path did not work end to end. The task-9
+   stub hid it completely by claiming `default_branch: "main"` in its create response
+   while a SEPARATE git-server fixture independently seeded a real `main` — two fake
+   backends sharing no storage.
+   **The fix is BOTH halves, and neither alone is sufficient:** the api now sends
+   `auto_init: true` on the same single `POST /user/repos` (no extra scope, request
+   or credential), **and** `scaffoldProjectWorkflow` bootstraps an unborn base ref
+   itself inside the existing clone step — which is the only thing that also fixes
+   wireframe 13a's *existing*-empty-repo path, where there is no create call to send
+   `auto_init` on. Proven by dbos `scaffold-project.e2e.ts` provisioning a fixture
+   with `autoInit: false` and reaching `succeeded`.
+   **CORRECTION to this note's original claim:** it said a correct fix "touches
+   `ProjectVersion`'s PR-number nullability". **It does not, and it did not.**
+   `prNumber` is already nullable at every layer (`schema.prisma` `prNumber Int?`),
+   and the bootstrap preserves the base PR so it stays non-null in practice. There
+   was no migration, no schema change and no db-lib edit. Do not reopen that question.
 2. **The exchange's failure mode is not what the code assumed**: real GitHub
    returns HTTP **200** with `{"error":"bad_verification_code"}`, so an `res.ok`
    check treats a failure as success. Fixed in task 62 with a typed

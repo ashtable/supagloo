@@ -2,6 +2,7 @@ import { generateKeyPairSync, createVerify } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   GITHUB_API_BASE,
+  createFixtureRepo,
   discoverInstallation,
   githubFetch,
   listOwnerRepos,
@@ -418,6 +419,67 @@ describe("discoverInstallation — the five fail-fast throws (D5)", () => {
     });
     expect(signerCalledWith).toMatchObject({ appId: "4338011" });
     expect(calls[0].headers.authorization).toBe("Bearer product.signed.jwt");
+  });
+});
+
+// ---------------------------------------------------------------------- plan row 63
+// Row 63's e2e acceptance needs a fixture repo with NO initial commit — the case the
+// product's own create-new path produces today and that 422s. The harness could not
+// make one: `auto_init: true` was hardcoded. The change is strictly ADDITIVE — the
+// DEFAULT stays `true`, because four lanes (scaffold, commit, publish, render) depend
+// on the fixture having a real `main` from the first byte.
+describe("createFixtureRepo — autoInit (row 63, additive)", () => {
+  it("defaults to auto_init:true", async () => {
+    // GUARD, not a red test: this pins the default that scaffold/commit/publish/render
+    // all rely on. If it ever goes red, someone flipped the default and took down four
+    // lanes at once.
+    const { fetchImpl, calls } = makeFetch([{ status: 201, body: { name: "r" } }]);
+    await createFixtureRepo({
+      pat: "p",
+      slug: "scaffold-happy",
+      runId: "runid42",
+      fetchImpl,
+      sleepImpl: noSleep,
+    });
+    expect(JSON.parse(calls[0].body!).auto_init).toBe(true);
+  });
+
+  it("sends auto_init:false when autoInit:false is passed", async () => {
+    const { fetchImpl, calls } = makeFetch([{ status: 201, body: { name: "r" } }]);
+    await createFixtureRepo({
+      pat: "p",
+      slug: "scaffold-unborn",
+      runId: "runid42",
+      autoInit: false,
+      fetchImpl,
+      sleepImpl: noSleep,
+    });
+    const body = JSON.parse(calls[0].body!);
+    expect(body.auto_init).toBe(false);
+    // Everything else about the create is unchanged — private, and the named repo.
+    expect(body.private).toBe(true);
+  });
+});
+
+describe("waitForRepoReady — branch gate (row 63, additive)", () => {
+  it("resolves on the repo record alone when requireBranch:false, issuing no /branches/* request", async () => {
+    // A commit-less repo has no `main`, so the default gate would burn its full 20 s
+    // budget and then throw a message blaming the caller for omitting `auto_init`.
+    const { fetchImpl, calls } = makeFetch([
+      { match: (u) => /\/repos\/[^/]+\/[^/]+$/.test(u), status: 200, body: { size: 0 } },
+    ]);
+    await expect(
+      waitForRepoReady({
+        pat: "p",
+        owner: "o",
+        repo: "r",
+        requireBranch: false,
+        fetchImpl,
+        sleepImpl: noSleep,
+        timeoutMs: 5_000,
+      }),
+    ).resolves.toBeTruthy();
+    expect(calls.filter((c) => c.url.includes("/branches/"))).toEqual([]);
   });
 });
 

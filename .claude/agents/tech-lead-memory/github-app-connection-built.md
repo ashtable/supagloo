@@ -21,8 +21,21 @@ Built 2026-07-18 (plan task 11). First GitHub code in the system. TDD plan:
 > the live account has 100+ repos, so `parseNextLink` is genuinely exercised.
 > Two live findings worth carrying: `exchangeCode` had to learn that real GitHub returns
 > **HTTP 200** with `{"error":"bad_verification_code"}` (now a typed
-> `GithubUserAuthExchangeError`), and `empty = size === 0` is retained deliberately but is
-> a known risk — plan row 65. See [[real-github-e2e-harness]].
+> `GithubUserAuthExchangeError`), and `empty = size === 0` was retained deliberately as a
+> known risk. See [[real-github-e2e-harness]].
+>
+> **UPDATE 2026-07-26 (plan row 65): the `size === 0` risk is CLOSED.**
+> `listInstallationRepos` now treats `size > 0` as definitive not-empty (no request) and
+> resolves the `size === 0` subset with `GET /repos/:o/:r/commits?per_page=2` — **409 or
+> ≤1 commit ⇒ empty, ≥2 commits ⇒ not empty**, any other answer ⇒ unknown ⇒ keep the
+> `size` verdict. Bounded by `EMPTINESS_PROBE_CONCURRENCY = 8` and **skipped entirely when
+> there are zero candidates**, which is the only reason the D9 budget assertion above
+> (`total() === 4`) still holds — that skip has its own named test, deliberately.
+> The `≤1 commit ⇒ empty` clause is the load-bearing half: every `auto_init` repo (one
+> README commit) must keep listing as empty or wireframe 13a's selectable "Empty · created
+> just now" row goes `data-disabled` and the whole nextjs `test:e2e:real` lane loses its
+> only project-acquisition path. Plan row 65's own stated acceptance said the opposite and
+> is defective.
 
 **Shared GitHub App primitives live in `database-lib/src/github.ts`** (exported
 from `src/index.ts` alongside `secrets.ts`), NOT the API — same "one impl for API
