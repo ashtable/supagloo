@@ -27,11 +27,17 @@ mechanism, no second scope, and no unversioned registration** — just omit `pre
 `current-design.md` §2.5's route inventory records only "bearer-authed `/v1` routes +
 `/healthz`", which reads like a structural guarantee; it is not one.
 
-**What genuinely IS missing** is an *optional*-auth seam: `requireAuth` is the only
-decorator and it 401s on a missing token, so "resolve the viewer if a token is present,
-otherwise continue anonymously" does not exist. The minimal, convention-fitting addition
-is a second decorator (`app.optionalAuth`) in the **same** plugin — a second plugin would
-re-run `decorateRequest("authUser", …)` and Fastify throws on a duplicate decorator.
+**`optionalAuth` NOW EXISTS — shipped 2026-07-26 (task 39).** Until then `requireAuth` was
+the only decorator and it 401s on a missing token, so "resolve the viewer if a token is
+present, otherwise continue anonymously" had no seam. It was added as a second decorator on
+the **same** plugin (a second plugin would re-run `decorateRequest("authUser", …)`, which
+Fastify throws on, and would duplicate `parseBearer`). Its contract is
+resolve-if-present/never-401: no header and a malformed header both continue anonymously
+**without a session lookup**, a valid token sets `authUser`/`authSession`, and a
+present-but-invalid token **degrades to anonymous rather than 401-ing** — the BFF forwards
+whatever cookie is present, so 401-ing a stale one would hand an error page to exactly the
+population most likely to hold one. `GET /api/me` is the session-truth endpoint; a public
+route is not.
 
 Note when adding it: `authService.authenticate()` also performs the sliding-expiry bump,
 so it fires for signed-in viewers of public routes too (correct — the viewer is active),
