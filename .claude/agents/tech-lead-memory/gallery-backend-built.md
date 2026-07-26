@@ -8,8 +8,11 @@ metadata:
 Built 2026-07-26 in `/Users/ash/code/supagloo-nodejs-api` (branch `v0.0.38`). Seven routes,
 five new modules under `src/gallery/`, one route file, four modified files.
 
-**HARDENED the same day** by an adversarial audit's nine findings (all closed in one pass):
-typecheck 0, unit 50 files / **620** tests, `tests/e2e/gallery.e2e.ts` **28/28** against real
+**HARDENED TWICE the same day.** Round 1 closed nine audit findings; a confirming skeptic then
+returned NOT-READY because that pass had MOVED the gap (a fourth cursor field, the `:id` param,
+the publish body). Round 2 put the rule in one module and widened it to every route:
+[[one-rule-one-module-many-boundaries]] is now the authority. Round 1's account:
+typecheck 0, unit 50 files / **620** tests (round 2: **52 files / 647**), `tests/e2e/gallery.e2e.ts` **28/28** (round 2: **30/30**) against real
 Postgres + real MinIO with **zero provider credentials**. The audit confirmed no SQL injection was
 reachable and every ownership/visibility/IDOR mutation was caught — and found ten unauthenticated
 500s behind bound parameters. Read [[bound-is-not-safe-postgres-value-gates]] and

@@ -42,6 +42,15 @@ grammar still had two holes the audit had not found:
 A four-digit year is load-bearing twice: it rejects V8's ±six-digit expanded years, which are legal
 JS instants and outside `timestamptz`'s range.
 
+## AMENDED 2026-07-26 (same day, round 2): this pass MOVED the gap, it did not close it
+
+The three gates above were written PER FIELD, and a fourth field of the same cursor (`i`), the
+`:id` param of every route in the api, and three of the publish body's four strings were still
+500s. Read [[one-rule-one-module-many-boundaries]] before touching any of this — the rule now
+lives in ONE module (`src/postgres-text.ts`) and the `q` control-char check moved to BEFORE
+`.trim()`, because `trim()` also strips VT/FF and `?q=%0B` was answering a 200 match-everything
+listing. The table below is round 1's history; it is no longer the whole gate.
+
 ## Reject, do not repair
 
 Stripping the control characters from `q` would make `q=%00` behave exactly like a BLANK `q` — a
