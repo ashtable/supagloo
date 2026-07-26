@@ -30,20 +30,46 @@
 # test-seed gates live here and not in the base file. The root e2e globalSetup (and
 # the api / dbos / nextjs ones) add these `-f` flags automatically.
 #
-# NO GitHub VARIABLE APPEARS BELOW, DELIBERATELY.
+# EXACTLY TWO GitHub VARIABLES APPEAR BELOW, BOTH NAMED AND BOTH FROM PLAN ROW 66.
+# Every other one is still deliberately absent.
+#
 # `docker-compose.yml` already substitutes all five real `GITHUB_APP_*` from the
 # untracked root `.env`, and the base URLs default to github.com via the api's zod
-# schema. Deleting the old overrides IS the whole of row 62 item (b), and item (e)
-# dissolves with them: `GITHUB_OAUTH_BASE_URL` is simultaneously a server-side
-# token-exchange target AND a browser redirect target, so any Compose-internal
-# hostname could only ever satisfy one of the two (that was the
-# DNS_PROBE_FINISHED_NXDOMAIN artifact). https://github.com satisfies both.
+# schema. Deleting the old overrides IS the whole of row 62 item (b). Item (e) was
+# that `GITHUB_OAUTH_BASE_URL` is simultaneously a server-side token-exchange target
+# AND a browser redirect target, so any Compose-internal hostname could only ever
+# satisfy one of the two (the DNS_PROBE_FINISHED_NXDOMAIN artifact). Row 62 dissolved
+# it by pointing both at https://github.com; plan row 66 dissolves it structurally, by
+# SPLITTING the variable:
+#
+#   * `GITHUB_OAUTH_BASE_URL` stays PUBLIC and stays ABSENT here — the browser's
+#     authorize redirect must resolve from the USER's machine. Overriding it is still
+#     forbidden and still recreates item (e).
+#   * `GITHUB_OAUTH_INTERNAL_BASE_URL` is the SERVER-side half, used by `exchangeCode`
+#     alone. It is safe to point at a Compose hostname precisely because no browser
+#     ever sees it. It points the api at ITSELF — no new container, because §10.7
+#     ("keeping dead stubs invites quiet re-adoption") and §10.9 ("reintroducing stubs
+#     is not a mitigation") rule that out.
+#   * `GITHUB_E2E_EXCHANGE_TOKEN` is what the api's double-gated, test-only
+#     `POST /login/oauth/access_token` hands back in place of the OAuth-issued user
+#     token. Substituted from the untracked root `.env`; NEVER inlined here.
+#     CONSEQUENCE, stated so it is not a surprise: with THIS overlay applied and the
+#     variable unset, the api REFUSES TO BOOT and says so, naming the variable. That
+#     is deliberate (a route that answered with a placeholder would let a browser spec
+#     go green while `POST /user/repos` 401s minutes later). A plain
+#     `docker compose up` is unaffected — it never sets SUPAGLOO_ENABLE_TEST_SEED, so
+#     the route is not registered and the token is never read.
+#
 # `SECRETS_ENCRYPTION_KEY` is likewise NOT overridden (D15) — the old all-zeros
 # value here meant the api ENCRYPTED with a key dbos could not DECRYPT with.
-# `GITHUB_E2E_PAT_TOKEN` never enters any container: it is host-side harness-only.
+# `GITHUB_E2E_PAT_TOKEN` STILL never enters any container: it is host-side
+# harness-only, and row 66 minted the narrower `GITHUB_E2E_EXCHANGE_TOKEN` (repository
+# creation only, no `delete_repo`) precisely so that property did not have to be
+# reversed. Do not "simplify" the two into one.
 #
 # `tests/unit/compose-test-overlay.test.ts` enforces all of the above as a
-# permanent NO-STUB GUARD, so the pattern cannot creep back.
+# permanent NO-STUB GUARD — including an ALLOW-LIST over every `GITHUB_*` key, so a
+# THIRD, unnamed one cannot slip in the way a fixed forbidden list would have let it.
 services:
   api:
     environment:
@@ -61,3 +87,16 @@ services:
       # LINE RE-BREAKS ROW 62 ITEM (a).
       NODE_ENV: development
       SUPAGLOO_ENABLE_TEST_SEED: "1"
+      # Plan row 66 — the SERVER-side half of the user-authorization host, and the
+      # ONE credential the double-gated test-only exchange route hands back. Together
+      # they let the nextjs browser lane drive the create-new-repo round trip against
+      # real GitHub: the api completes the code→token hop against ITSELF over this
+      # network, then `POST /user/repos` and the entire scaffold run for real. The two
+      # gates above are what register that route at all; in a production image both
+      # are false and it does not exist.
+      #
+      # NOTE: these lines make row 66 the only row in its block that ADDS config,
+      # cutting against §11.2's "the delta is REMOVING the test-side overrides".
+      # Recorded in design-delta §11.4 rather than left to be rediscovered.
+      GITHUB_OAUTH_INTERNAL_BASE_URL: http://api:4000
+      GITHUB_E2E_EXCHANGE_TOKEN: ${GITHUB_E2E_EXCHANGE_TOKEN}

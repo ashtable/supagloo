@@ -218,9 +218,19 @@ function retryDelayMs(headers, attempt) {
  * must fail immediately, and a `422` is a genuine conflict (a duplicate repo name means a
  * bug, and a retry loop would mask it — D6).
  *
- * The retry lives HERE, in the harness, on purpose: adding it to the three product GitHub
- * clients is deferred to plan row N2 (one of them is db-lib, which would fire the
- * release/pin/Dockerfile-ARG lockstep for no test-side benefit).
+ * **Plan row 64 landed the product half (was deferred as "row N2").** The same semantics
+ * now live in `supagloo-database-lib/src/github-retry.ts` (`isRetryableGithubStatus` /
+ * `githubRetryDelayMs` / `withGithubRetry`) and back all four product GitHub callers:
+ * db-lib's own `mintInstallationToken`, the API's App client, the DBOS git-ops REST
+ * client, and `publish-version`'s tag creator (design-delta §11.7 "one implementation,
+ * four consumers").
+ *
+ * This harness copy STAYS — it is test code, and the product must never depend on it (nor
+ * this on the product). The two are kept semantically IDENTICAL on purpose: the 60s cap on
+ * header-derived delays, the 30s cap on the blind exponential fallback, `maxAttempts = 4`,
+ * and the verbatim-header exhaustion message all match `github-retry.ts` byte for byte in
+ * behaviour. **If they ever diverge, the harness and the product are honouring GitHub
+ * differently, which is a bug in whichever one moved.**
  */
 function isRetryable(status, headers) {
   if (status === 429) return true;
@@ -530,12 +540,23 @@ function serializeCreate(fn, { sleepImpl = realSleep, spacingMs = 1000 } = {}) {
 /**
  * Create ONE throwaway private repo for a spec run: `POST /user/repos` with the PAT.
  *
- * `auto_init: true` IS LOAD-BEARING, NOT COSMETIC (D6). `scaffold-project.ts` opens its
- * base PR with `base: "main"`; a commit-less repo has no `main` at all and real GitHub
- * 422s. This is exactly what the retired git-server fixture did with
- * `POST /__admin/repos {seed:true, defaultBranch:"main"}`. Anyone "simplifying" this to
- * `auto_init:false` breaks scaffold, commit, publish and the whole render lane at once.
- * (See plan row N1: the product's own create-new path has this bug for real.)
+ * `auto_init: true` IS THE LOAD-BEARING DEFAULT, NOT COSMETIC (D6). `scaffold-project.ts`
+ * opens its base PR with `base: "main"`; a commit-less repo has no `main` at all and
+ * real GitHub 422s. This is exactly what the retired git-server fixture did with
+ * `POST /__admin/repos {seed:true, defaultBranch:"main"}`. Anyone flipping the DEFAULT
+ * to `false` breaks scaffold, commit, publish and the whole render lane at once.
+ *
+ * `autoInit: false` is an explicit, ADDITIVE opt-out added by plan row 63, whose e2e
+ * acceptance needs a fixture with NO initial commit — that is the shape wireframe 13a's
+ * "Empty · created just now" existing repo has, and (before row 63) the shape the
+ * product's own create-new path produced. It is used by exactly ONE spec today:
+ * `supagloo-nodejs-dbos/tests/e2e/scaffold-project.e2e.ts`'s commit-less case, reached
+ * through `provisionFixtureRepo(slug, deps, { autoInit: false })`. Since row 63 the
+ * workflow BOOTSTRAPS an unborn base ref itself, so that spec now scaffolds to
+ * `succeeded` — but every other lane still relies on the default.
+ *
+ * Pair `autoInit: false` with `waitForRepoReady({ requireBranch: false })`: a
+ * commit-less repo has no branch for that gate to observe.
  *
  * A 422 is FATAL and never retried: with per-run ids a name collision means a bug.
  */
@@ -544,6 +565,7 @@ export async function createFixtureRepo({
   slug,
   runId = E2E_RUN_ID,
   spec = slug,
+  autoInit = true,
   fetchImpl = globalThis.fetch,
   sleepImpl = realSleep,
 }) {
@@ -556,7 +578,7 @@ export async function createFixtureRepo({
         body: {
           name,
           private: true,
-          auto_init: true,
+          auto_init: autoInit,
           description: buildE2eRepoDescription(spec, runId),
         },
         fetchImpl,
@@ -572,12 +594,19 @@ export async function createFixtureRepo({
 /**
  * Gate #1 before any workflow enqueue: a just-created repo can 404 briefly, and its
  * default branch appears a moment after the repo record does.
+ *
+ * `requireBranch: false` (plan row 63) waits on the repo RECORD only and never issues
+ * the `…/branches/<branch>` GET. It exists for the deliberately commit-less fixture
+ * (`createFixtureRepo({ autoInit: false })`), which has no branch at all: with the
+ * default gate that case would burn the entire 20 s budget and then throw. Only pass it
+ * where the repo is MEANT to have no branch.
  */
 export async function waitForRepoReady({
   pat,
   owner,
   repo,
   branch = "main",
+  requireBranch = true,
   timeoutMs = 20_000,
   fetchImpl = globalThis.fetch,
   sleepImpl = realSleep,
@@ -596,6 +625,7 @@ export async function waitForRepoReady({
     });
     lastStatus = repoRes.status;
     if (repoRes.ok) {
+      if (!requireBranch) return repoRes.body;
       const branchRes = await githubFetch(
         `${GITHUB_API_BASE}/repos/${owner}/${repo}/branches/${branch}`,
         {
@@ -615,9 +645,15 @@ export async function waitForRepoReady({
   }
   throw new Error(
     `Fixture repo ${owner}/${repo} did not become ready within ${timeoutMs}ms ` +
-      `(last status ${lastStatus}; expected the repo AND its "${branch}" branch to answer).\n` +
-      "  If the repo exists but has no branch, the create call probably omitted auto_init:true — " +
-      "that is load-bearing (see D6).",
+      `(last status ${lastStatus}; expected the repo` +
+      (requireBranch ? ` AND its "${branch}" branch` : "") +
+      " to answer).\n" +
+      (requireBranch
+        ? "  If the repo exists but has no branch, the create call probably omitted auto_init:true — " +
+          "that is the load-bearing DEFAULT (see D6). If the repo is MEANT to be commit-less " +
+          "(createFixtureRepo({ autoInit: false }), plan row 63), pass requireBranch:false instead."
+        : "  requireBranch:false was set, so only the repo record was awaited — this is a create/visibility " +
+          "failure, not a missing branch."),
   );
 }
 

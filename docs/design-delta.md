@@ -446,7 +446,7 @@ erDiagram
         string state "base|working|published|archived"
         string commitMessage
         json changedFiles
-        int prNumber
+        int prNumber "nullable"
         datetime publishedAt
     }
     PROJECT_JOB {
@@ -607,6 +607,39 @@ volumes: { pgdata: {}, minio-data: {} }
 stack: UI on :8000, API on :4000, Postgres, MinIO (+ its console on :9001),
 migrations applied, bucket created. Railway prod runs the same three app
 images against Railway Postgres + the existing bucket.
+
+**A second public/internal endpoint pair (plan row 66).** `S3_ENDPOINT` /
+`S3_PUBLIC_ENDPOINT` exist because a URL signed against `minio:9000` is unreachable
+from a browser. The GitHub user-authorization host has the *same* shape of problem and
+now has the same shape of answer: **`GITHUB_OAUTH_BASE_URL`** is the value the
+**browser** opens (the install picker and the authorize redirect), and
+**`GITHUB_OAUTH_INTERNAL_BASE_URL`** is the value the **api process** POSTs the
+code→token exchange to. One variable served both until row 66, which is why a
+containerised api could not have its exchange redirected without also moving the
+browser's redirect target — row 62 item (e)'s `DNS_PROBE_FINISHED_NXDOMAIN` in one
+sentence.
+
+Two DELIBERATE differences from the S3 pair, both recorded because they look like
+inconsistencies until you know why:
+
+1. **The naming is inverted relative to S3.** Under the S3 convention the *unsuffixed*
+   name is internal and the suffixed one is public; §11.4 originally proposed mirroring
+   that exactly. Doing so would have silently changed the meaning of a variable every
+   deployed environment already sets, so the new NAME is given to the new MEANING
+   instead. That is the only direction that leaves already-deployed environments
+   untouched.
+2. **It is defaulted, not required.** The S3 pair is required-no-default because there
+   is no correct default endpoint. Here there is: the public value. Unset ⇒
+   `GITHUB_OAUTH_INTERNAL_BASE_URL` resolves to `GITHUB_OAUTH_BASE_URL` ⇒ behaviour
+   identical to before the split, so "real-by-default ⇒ prod needs zero config" (§11.2)
+   survives. Overriding only the public one (a GitHub Enterprise host, say) still moves
+   both halves together.
+
+Only `docker-compose.test.yml` sets the internal one, to `http://api:4000` — the api
+calls **itself**, so there is no new container to build, run or later mistake for a
+revived stub (§10.7, §10.9). dbos never receives it: dbos has no OAuth base URL at all,
+and a `providers.e2e.ts` guard keeps any dbos-visible GitHub variable free of local
+hostnames.
 
 ---
 
@@ -887,7 +920,7 @@ sequenceDiagram
     W->>DB: step loadRequestAndCredentials ✓ (checkpointed)
     W->>LLM: step callLlmStructured — attempt 1
     LLM-->>W: 503
-    Note over W: retriesAllowed: maxAttempts 5, backoff 1s → 2s → 4s…<br/>shouldRetry: false for 4xx (don't burn attempts on bad requests)
+    Note over W: retriesAllowed: maxAttempts 5, backoff 1s → 2s → 4s…<br/>AI provider: shouldRetry false for 4xx (don't burn attempts on bad requests).<br/>GitHub is NOT the same rule — see the two-layer note below.
     W->>LLM: attempt 2 (after 1s)
     LLM-->>W: 200, JSON
     W->>W: Zod-parse vs GeneratedStoryboardSchema — FAILS (malformed field)
@@ -981,7 +1014,7 @@ sequenceDiagram
     T->>SYS: DBOSClient.enqueue(scaffoldProjectWorkflow, workflowID = jobId)
     W->>GH: mintInstallationToken (unchanged product code)
     W->>GIT: clone → commit v0.0.0 → push (authenticated https remote)
-    W->>GH: open base PR (base: "main" — why auto_init is load-bearing) → merge
+    W->>GH: open base PR (base: "main" — bootstrapped by ensureBaseRef when unborn) → merge
     W->>DB: idempotent stage writes → finalize
 
     T->>T: crash injection: cancel mid-run, delete the workspace, RESUME
@@ -1057,6 +1090,32 @@ explicit name; steps that update job-stage rows do so with idempotent writes
 so replays are safe. Typed *permanent* failures (e.g. "repo is not a Supagloo
 project") are thrown as non-retryable via `shouldRetry` predicates.
 
+**The GitHub two-layer retry rule (plan row 64).** An earlier draft of this
+document stated a blanket *"`shouldRetry`: false for 4xx"* and repeated it in the
+git-ops classifier's own doc-comment. **For GitHub that was wrong**, and the
+correction is not "retry 4xx" but "retry it one layer down":
+
+- **The client sleeps.** All four product GitHub callers — db-lib's
+  `mintInstallationToken`, the API's App client, the DBOS git-ops REST client, and
+  `publish-version`'s tag creator — route their requests through db-lib's
+  `withGithubRetry` (§11.7), which honours GitHub's own `Retry-After` /
+  `x-ratelimit-reset` with a bounded budget of 4 attempts, capped at 60 s per wait
+  (30 s for the blind exponential fallback). GitHub returns its **secondary (abuse)
+  rate limit as `403 + Retry-After`**, so a 403 genuinely can change on retry.
+- **The DBOS classifier still says `403 ⇒ permanent`** (`isPermanentHttpStatus`),
+  so the two layers do not multiply. It is also the only workable split: the step
+  budget is `{maxAttempts: 4, intervalSeconds: 1, backoffRate: 2}` ≈ **7 s total**,
+  which structurally cannot honour a typical 60 s `Retry-After`. `429` stays
+  transient at both layers — a primary rate limit is worth a durable re-attempt.
+- **A bare `403` is retried by neither layer.** With no `Retry-After` and no
+  exhausted `x-ratelimit-remaining` it is a permission denial, and §11.3 makes that
+  an *expected* behaviour: the installation deliberately holds no `administration`
+  scope. `422` is never retried at all — it is a real conflict.
+
+The **AI provider** classifier (`callLlmStructured`, `providers/errors.ts`) is a
+separate function with no `Retry-After` path, and it keeps the strict 4xx rule
+unchanged; the sentence above about 4xx applies to it and to it alone.
+
 Every `git-ops` workflow (and `renderWorkflow`'s clone) starts with a
 **`mintInstallationToken`** step: sign a short-lived App JWT with
 `GITHUB_APP_PRIVATE_KEY`, exchange it via
@@ -1109,7 +1168,8 @@ steps. Minted fresh per run, never persisted (§2.3).
    at request time and never hardcoded; see §9-Q10 for the licensing
    posture) → `callLlmStructured`
    (`retriesAllowed`, `maxAttempts: 5`, exponential backoff, `shouldRetry`
-   rejects 4xx) → in-workflow Zod validation with a **bounded static
+   rejects 4xx — the AI-provider rule, **not** the GitHub one; see the
+   two-layer note above) → in-workflow Zod validation with a **bounded static
    re-prompt loop** (max 3 repair attempts — a plain `for` loop over the
    same registered step, not a dynamic workflow) → `persistResult`.
    Handles both `storyboard` (full scene breakdown) and `script`
@@ -1251,6 +1311,29 @@ app database besides DBOS workflows, and the only S3 URL signer.
 
 **Ops**
 - `GET /healthz`
+
+**Test-only, and OUTSIDE `/v1` (plan row 66)**
+- `POST /login/oauth/access_token` — the user-authorization code→token exchange,
+  answered by the api **itself**. Registered only when BOTH `NODE_ENV !== 'production'`
+  and `SUPAGLOO_ENABLE_TEST_SEED === '1'` (the literal `'1'`, §9-Q9), enforced by *not
+  registering the route*, so a failed gate is a true 404 from Fastify's own not-found
+  handler rather than a 401/403 that would leak its existence. Returns
+  `{ access_token, token_type, scope }` — GitHub's own envelope, shape-for-shape — with
+  `access_token` taken from **`GITHUB_E2E_EXCHANGE_TOKEN`**; if both gates pass and that
+  variable is missing or blank the api **refuses to boot, naming the variable**, because
+  a placeholder token would let a browser spec go green while `POST /user/repos` 401s
+  minutes later.
+- **No bearer**, for the same reason `POST /v1/test/seed` cannot require one: the route's
+  purpose *is* to hand back a credential. The double gate, plus the fact that a
+  production image holds no such token at all, is the protection.
+- **Not under `/v1`, and that is structural, not stylistic:** the client requests a fixed
+  `${base}/login/oauth/access_token` — GitHub's own URL shape, with no version prefix —
+  so a `/v1`-scoped registration could never be reached. It therefore also gets its own
+  `buildApp` deps carrier rather than riding on `AuthDeps`, whose whole scope only exists
+  when the session surface is wired.
+- Why it exists at all: see §11.4 tier 2. It is the api half of the OAuth
+  public/internal base-URL split, and it is what closes the reported deviation that the
+  product's headline designed path shipped un-exercised at browser level.
 
 ---
 
@@ -1777,6 +1860,19 @@ config.** Both backend env loaders already default `GITHUB_API_BASE_URL` to
 `https://github.com` ("real-by-default ⇒ prod needs zero config"). Not one
 GitHub variable was *added* anywhere; six were deleted.
 
+**Amendment (plan row 66) — the one exception, named rather than left as drift.**
+Row 66 is the only follow-up that ADDS configuration: two lines on the api service
+(`GITHUB_OAUTH_INTERNAL_BASE_URL`, `GITHUB_E2E_EXCHANGE_TOKEN`) and one new optional
+env key. It cuts against this paragraph and is recorded here so nobody has to
+rediscover it as an inconsistency. The justification is that the deviation it closes
+(§11.4 tier 2) is *unclosable* without it: the property that made the browser leg
+impossible was precisely that ONE variable had to serve a browser target and a server
+target at once, and no amount of removal fixes a variable that is overloaded. The
+addition is also constrained to keep this paragraph's spirit — the new base URL
+defaults to the existing one (so production still needs zero config, and nothing is
+"pointed at" anything in any non-test lane), and the credential is optional, absent in
+production, and read by a route that does not exist there.
+
 Worth recording because it cost a debugging cycle: the **dbos worker was
 already real** — nothing in Compose ever pointed it at the stub. The stub wiring
 lived entirely in the *specs*, so the worker had been 404ing on the fabricated
@@ -1847,11 +1943,17 @@ Repos are created as
 with a stamped description carrying the run id, the spec and an ISO timestamp.
 Three properties are load-bearing rather than cosmetic:
 
-- **`auto_init: true`.** `scaffoldProjectWorkflow` opens its base PR with
-  `base: "main"`; a commit-less repo has no `main` and real GitHub 422s. This is
-  exactly what the retired git-server fixture did with
-  `{seed: true, defaultBranch: "main"}`. Anyone "simplifying" it breaks scaffold,
-  commit, publish and the render lane at once.
+- **`auto_init: true` — the load-bearing DEFAULT.** `scaffoldProjectWorkflow`
+  opens its base PR with `base: "main"`; a commit-less repo has no `main`. This
+  is exactly what the retired git-server fixture did with
+  `{seed: true, defaultBranch: "main"}`. Anyone flipping the DEFAULT to `false`
+  breaks scaffold, commit, publish and the render lane at once. Plan row 63 added
+  an explicit, **additive** `autoInit: false` opt-out (plus a matching
+  `requireBranch: false` on the readiness gate, since a commit-less repo has no
+  branch to wait for), used by exactly one spec — `dbos
+  scaffold-project.e2e.ts`'s commit-less case, which proves the workflow's own
+  unborn-base-ref bootstrap. Since row 63 that case scaffolds to `succeeded`
+  rather than 422ing.
 - **Per-run names.** The scaffold's v0.0.0 commit is byte-deterministic by
   design (a crash-safety property), so a **reused** repo rejects a second run.
   Any "cache the fixture repo" optimisation silently reintroduces that
@@ -1890,33 +1992,99 @@ heavily-commented helper that **throws if asked for any other URL**, so it canno
 drift into general-purpose stubbing. This is §10.2's "shim *only* the interactive
 hop" exception, applied to GitHub.
 
-**Tier 2 (the nextjs BROWSER leg): reclassified — a REPORTED DEVIATION, with its
-reason.** The browser drives real BFF → **containerised** api → github.com. A
+**Tier 2 (the nextjs BROWSER leg): was a REPORTED DEVIATION — CLOSED in plan row
+66.** The browser drives real BFF → **containerised** api → github.com. A
 containerised api exposes no `fetchImpl` seam, and the only container-level seam
-is `GITHUB_OAUTH_BASE_URL` — which is *simultaneously* the browser's
-authorize-redirect target, so overriding it re-creates the very
+was `GITHUB_OAUTH_BASE_URL` — which is *simultaneously* the browser's
+authorize-redirect target, so overriding it re-created the very
 `DNS_PROBE_FINISHED_NXDOMAIN` artifact (row 62 item (e)) this round deletes.
-Therefore the nextjs specs switch to the existing-empty-repo path, the
-`?code=e2e-create-repo-code` callback helper is deleted (it could never work
-against real GitHub), and the create-new **client** half stays covered by the
-mock lane while its **server** half is covered by tier 1. The honest closing fix
-— a `GITHUB_OAUTH_BASE_URL` public/internal split mirroring
-`S3_ENDPOINT`/`S3_PUBLIC_ENDPOINT`, plus a double-gated test-only exchange route
-— is **plan row 66**, not this round.
+Round 3 therefore switched the nextjs specs to the existing-empty-repo path,
+deleted the `?code=e2e-create-repo-code` callback helper (it could never work
+against real GitHub), and left the create-new **client** half to the mock lane
+and its **server** half to tier 1 — booking the consequence plainly: *the
+product's headline designed path shipped un-exercised at browser level.*
 
-**Groundwork item, the §10.4a analogue.** §10.4a's standing rule is *"if the live
-routes differ, **the client changes, not the tests**."* Round 3 applied it and
-found one place where reality does **not** differ for our fixtures:
-`empty = size === 0` (`github-app-client.ts`). GitHub reports `size` in KB and
-computes it asynchronously, but a live read-only probe found small real repos
-genuinely reporting `size: 0`, so an `auto_init` fixture lists as `empty: true`.
-The minimal-diff choice — **no product change** — is therefore correct here, and
-a change would have been unforced risk. What the round *does* add, because the
-failure mode is silent (a disabled wizard row whose click is a no-op, surfacing
-as an opaque timeout): a render-lane setup gate that fails fast if the api's own
-`filter=empty` listing omits a fixture repo, and a spec-level assertion that the
-repo's row carries no `data-disabled` before it is clicked. The contingency —
-probe refs instead of trusting `size` — is **plan row 65**.
+**Row 66 landed the closing fix, in the shape this paragraph named, with ONE
+deviation from it.** The two halves:
+
+1. **The base-URL split** (§4). `GITHUB_OAUTH_BASE_URL` is the BROWSER's host;
+   the new `GITHUB_OAUTH_INTERNAL_BASE_URL` is the api's, used by `exchangeCode`
+   and nothing else. **Deviation, recorded deliberately:** this paragraph
+   proposed *"mirroring `S3_ENDPOINT`/`S3_PUBLIC_ENDPOINT`"*, under which the
+   unsuffixed name would become the INTERNAL one. That was rejected: it silently
+   changes the meaning of a variable every deployed environment already sets,
+   whereas naming the NEW variable for the NEW meaning leaves them untouched and
+   preserves §11.2's "prod needs zero config". §4 records both differences from
+   the S3 pair (the inverted suffix, and defaulted rather than required).
+2. **The double-gated test-only exchange route** (§8). `POST
+   /login/oauth/access_token`, registered **outside** `/v1` because the client
+   requests a fixed unversioned suffix, gated by *exactly* `POST /v1/test/seed`'s
+   pair — `NODE_ENV !== 'production'` AND the literal
+   `SUPAGLOO_ENABLE_TEST_SEED === '1'` — and never registered when either fails.
+   The test overlay points the api's internal base at **itself**
+   (`http://api:4000`), so the exchange never leaves the Compose network and no
+   new container exists to be mistaken for a revived stub (§10.7, §10.9).
+
+The nextjs spec restored as **E-RNP1b** now drives the whole 11-hop round trip:
+CTA → nonce → localStorage stash → authorize popup → the BFF's 302 → *[the one
+simulated hop]* → the callback page → `/api/projects/create-repo` → result poll →
+job poll → ready card → `/studio/<id>`, and then reads the repository back off
+github.com. Exactly one hop is simulated — a HUMAN clicking "Authorize" — which
+is the same §10.2 exception tier 1 and the OpenRouter/YouVersion helpers already
+use. Everything after it is real, `POST /user/repos` included: the substituted
+thing is the token's PROVENANCE, not its validity.
+
+**The cost, stated rather than buried (§11.8):** this puts a GitHub credential
+inside the api container for the first time. It is NOT `GITHUB_E2E_PAT_TOKEN` —
+that property is preserved, not reversed — but a second, purpose-built
+`GITHUB_E2E_EXCHANGE_TOKEN` with repository-creation rights only and deliberately
+no `delete_repo`.
+
+**Groundwork item, the §10.4a analogue — LANDED in plan row 65.** §10.4a's
+standing rule is *"if the live routes differ, **the client changes, not the
+tests**."* Round 3 applied it to `empty = size === 0` (`github-app-client.ts`)
+and deferred: GitHub reports `size` in KB and computes it asynchronously, but a
+live read-only probe found small real repos genuinely reporting `size: 0`, so an
+`auto_init` fixture did list as `empty: true` and the minimal-diff choice was to
+leave it. Row 65 has since made the change, and **the earlier "no product change
+is correct here" conclusion no longer stands** — `size: 0` is not evidence of
+emptiness, only the *absence* of evidence of content, and the live finding it
+rested on is exactly the coincidence that hid the defect.
+
+The implemented derivation is D16's, not the plan row's:
+
+- `size > 0` ⇒ **definitively not empty, and no probe is issued.** `size` lags
+  upward and never overstates, so a positive reading is trustworthy alone.
+- `size === 0` ⇒ **a candidate**, resolved by
+  `GET /repos/:o/:r/commits?per_page=2`: **409** ("Git Repository is empty.")
+  ⇒ empty; **200 with ≤1 commit** ⇒ empty; **200 with ≥2 commits** ⇒ not empty;
+  anything else ⇒ **unknown**, falling back to the `size` verdict so a transient
+  probe failure can never be worse than the pre-probe behaviour.
+- The fan-out is bounded (`EMPTINESS_PROBE_CONCURRENCY = 8`) and **skipped
+  entirely when there are no candidates**, which is what preserves D9's
+  *"two listings ⇒ exactly TWO mints and TWO listing GETs"* request budget.
+
+The **`≤1 commit ⇒ empty`** clause is load-bearing and was chosen against the
+plan row's own wording (*"a repo with `size: 0` but a non-empty ref list is NOT
+reported empty"*). Every fixture repo in the system is `auto_init: true`, and
+since row 63 so is every repo the product itself creates — one README commit,
+one branch. The row's literal rule would flip all of them to `empty: false`,
+disabling the picker row that is the sole project-acquisition path for the whole
+nextjs `test:e2e:real` lane, and contradicting wireframe 13a, which designs
+"Empty · created just now" as **selectable**. The row's stated unit acceptance is
+therefore defective and is corrected where the row is marked done.
+
+Measured cost on the live installation (2026-07-26): 582 visible repos over 6
+pages, of which **55 report `size: 0`** ⇒ one page load is 1 mint + 6 listing
+GETs + 55 probes, issued 8 at a time. The candidate count is dominated by this
+account's accumulated e2e fixture repos (§11.9), not by anything a real user
+would have.
+
+What round 3 added around this, and which stays: a render-lane setup gate that
+fails fast if the api's own `filter=empty` listing omits a fixture repo, and a
+spec-level assertion that the repo's row carries no `data-disabled` before it is
+clicked — both still necessary, because the failure mode is silent either way (a
+disabled wizard row whose click is a no-op, surfacing as an opaque timeout).
 
 Newly in play, and recorded because the stub never exercised them: the Contents
 API's 1 MB inline cap and representation switch, and multi-segment content paths
@@ -1988,8 +2156,10 @@ unit-first:
 
 Deliberately **not** fixed here, each filed as a plan row rather than absorbed:
 create-new-repo's missing `auto_init` (**row 63** — the highest-severity of them,
-see §11.9), client-side `403`/`429` retry (**row 64**), the emptiness derivation
-(**row 65**), and the OAuth public/internal split (**row 66**).
+see §11.9; **since closed**, with an unborn-base-ref bootstrap in the workflow as
+well as the `auto_init` flag), client-side `403`/`429` retry (**row 64**), the
+emptiness derivation (**row 65**), and the OAuth public/internal split
+(**row 66**).
 
 ### 11.7 Harness simplification, and the inverted no-stub guards
 
@@ -2019,11 +2189,28 @@ see §11.9), client-side `403`/`429` retry (**row 64**), the emptiness derivatio
     **decrypted** with the compose dev key, so any api-written provider
     credential failed `decryptSecret` — which the AI-generation spec in this very
     lane would have hit.
-- **The overlay guard test is INVERTED, not deleted** (§10.7's precedent): it now
-  asserts the overlay defines **no** stub service, **no** `GITHUB_*` key and
-  **no** `SECRETS_ENCRYPTION_KEY`. It is a permanent no-stub guard, and it went
-  **red first** — that RED step was this round's TDD entry point. A second guard
-  asserts base compose's `api` and `dbos` encryption keys are equal.
+- **The overlay guard test is INVERTED, not deleted** (§10.7's precedent): it
+  asserts the overlay defines **no** stub service and **no**
+  `SECRETS_ENCRYPTION_KEY`. It is a permanent no-stub guard, and it went **red
+  first** — that RED step was this round's TDD entry point. A second guard asserts
+  base compose's `api` and `dbos` encryption keys are equal.
+  - **Correction (plan row 66).** This bullet used to claim the guard asserted
+    "no `GITHUB_*` key", and `current-design.md` said the same. It did not: it was
+    a **fixed eight-name forbidden list**, so a ninth, differently-named GitHub
+    variable would have slipped past in silence — the documentation was strictly
+    stronger than the code, which is the failure mode a guard is supposed to
+    prevent. Row 66 needed to add two such variables, so rather than let them slip
+    past under a prose claim that would then have been false, the guard was
+    rewritten as an **allow-list over every `GITHUB_*` key present**: the eight
+    named forbidden ones still fail individually, and any GitHub key that is not
+    one of the two row-66 exceptions (`GITHUB_OAUTH_INTERNAL_BASE_URL`,
+    `GITHUB_E2E_EXCHANGE_TOKEN`, each commented with the reason it is safe) fails
+    the suite. It also gained POSITIVE assertions — the internal base **is** set
+    on `api`, the public `GITHUB_OAUTH_BASE_URL` is **still absent everywhere**,
+    `GITHUB_E2E_PAT_TOKEN` reaches **no** service, the token arrives by `${VAR}`
+    substitution, and no token literal appears in the file — so deleting either
+    addition fails loudly here instead of presenting as a browser spec that cannot
+    complete the create-new-repo round trip.
 - **An anti-drift guard on the prefix.** The throwaway-repo prefix
   `supagloo-e2e-delete-me-` lives in exactly ONE authored file, in root
   (`tests/support/e2e-github-naming.mjs`); api, dbos and nextjs dynamic-import it
@@ -2037,7 +2224,14 @@ see §11.9), client-side `403`/`429` retry (**row 64**), the emptiness derivatio
   discovery, fixture creation, the readiness/visibility gates, ref + content
   seeding, the assertion readers, `Link: rel=next` walking, and
   `Retry-After`/`x-ratelimit-reset` backoff — one implementation, four consumers,
-  each with a thin (~40-60 line) adapter.
+  each with a thin (~40-60 line) adapter. **Plan row 64 realised the same shape on
+  the product side**, in `supagloo-database-lib/src/github-retry.ts`
+  (`isRetryableGithubStatus` / `githubRetryDelayMs` / `withGithubRetry`), consumed
+  by db-lib's own `mintInstallationToken`, the API's App client, the DBOS git-ops
+  REST client and `publish-version`'s tag creator. The harness keeps its own copy —
+  it is test code and the product must never depend on it — and the two are kept
+  semantically identical on purpose; a divergence means one of them is honouring
+  GitHub wrongly.
 - **nextjs splits into THREE lanes** — mock (Docker-free, must stay green), real,
   and heavy render — with a **coverage guard** asserting the union of the three
   configs' `include`/`exclude` covers every `tests/e2e/*.e2e.ts` exactly once.
@@ -2054,14 +2248,31 @@ see §11.9), client-side `403`/`429` retry (**row 64**), the emptiness derivatio
 ### 11.8 Secrets, and the fixture-repo lifecycle
 
 Two new variables, documented in `.env.example` by **name only** (§10.8's
-posture; no value is ever inlined into tracked config, printed, or logged):
+posture; no value is ever inlined into tracked config, printed, or logged) — and a
+third added later by plan row 66:
 
 - **`GITHUB_E2E_PAT_TOKEN`** — a classic PAT that creates (and, from the cleanup
   script, archives) fixture repos. It is **host-side harness-only and never
   enters any container**; dbos's env-override helper deliberately omits it, and
   the render child-process env allowlist keeps it out of render children by
-  construction. Plan row 66 notes that closing tier 2 would require putting it
-  *into* the api container — a cost to weigh, not a free upgrade.
+  construction. Round 3 noted that closing tier 2 would require putting it *into*
+  the api container — a cost to weigh, not a free upgrade. **That cost was not
+  paid.** Row 66 closed tier 2 with a second, narrower credential instead, so this
+  sentence stands unchanged and unreversed: this PAT still enters no container.
+- **`GITHUB_E2E_EXCHANGE_TOKEN`** (plan row 66) — the **only** GitHub credential
+  that ever enters a product container, read by exactly one place: the api's
+  double-gated test-only exchange route (§8), which hands it back as the user
+  access token. A **fine-grained** token with repository-**creation** rights only
+  and deliberately **no `delete_repo`** — the cleanup script archives and never
+  deletes, so no delete capability is needed anywhere in this project. It reaches
+  the container by `${GITHUB_E2E_EXCHANGE_TOKEN}` substitution from the untracked
+  root `.env`; the overlay guard asserts that (and that no literal token appears in
+  the file). Absent or blank while both gates pass, the api **refuses to boot,
+  naming the variable** — never a placeholder, never a silent self-disable, because
+  a spec that quietly stopped exercising the real exchange is a green lie (§10.8).
+  Its blast radius is deliberately smaller than the PAT's in both directions: it
+  cannot delete anything, and a production image holds neither it nor the gates
+  that would read it.
 - **`SUPAGLOO_E2E_GITHUB_OWNER`** — optional; only needed when the App has more
   than one installation.
 
@@ -2116,7 +2327,14 @@ paid providers:
   than the verified 12500/hr core limit. Mitigated **in the harness** (creation
   funnelled through a module-level mutex with ~1 s spacing; `403`/`429` honour
   `Retry-After`/`x-ratelimit-reset` with capped backoff, and the header value is
-  surfaced verbatim, never asserted on). Product-side handling is plan row 64.
+  surfaced verbatim, never asserted on). **Product-side handling landed with plan
+  row 64** and is now the same rule in the same shape: db-lib's `withGithubRetry`
+  backs all four product GitHub callers, honouring `Retry-After` /
+  `x-ratelimit-reset` over 4 bounded attempts capped at 60 s per wait, surfacing the
+  header verbatim on exhaustion. The DBOS step classifier deliberately keeps
+  `403 ⇒ permanent` so the client's backoff and the step budget do not multiply, and
+  a bare (unthrottled) 403 is still retried by neither layer — see the two-layer
+  rule in §7.
 - **Real latency.** Clone/push/PR/merge against github.com pushed the wizard's
   `project-ready-card` wait from 120 s to **240 s**, against wireframe 12a's
   designed ~20 s local ideal. The design's own latency assumption is now
@@ -2139,20 +2357,54 @@ paid providers:
     one nextjs import spec selected `[data-testid^="repo-row-"]` — literally the
     **first** row — which against an all-repos installation is one of the user's
     real repos. It now types the fixture repo's name and clicks it explicitly.
+  - **Measured, rather than assumed (2026-07-26T00:07Z, read-only — a `--dry-run`
+    plus a scratch owner-repo listing; nothing mutated).** The account holds
+    **563** owned repos, of which **180** match the fixture prefix: **0 archived,
+    180 active, 180 private, 0 public**, oldest `created_at`
+    **2026-07-25T10:21:05Z**, newest **2026-07-26T00:07:19Z**. The "~15-20 per
+    full sweep" figure above is confirmed by this data. **Zero archived means the
+    interactive cleanup script has never been run** — the only lifecycle-ending
+    path in the system has never ended a lifecycle.
+  - **The shape of the accumulation kills one of row 67's three suggested exits
+    outright.** All 180 candidates were created inside a **~14-hour window**, so
+    the pain is *volume within a single day of iteration*, not *staleness*: an
+    **age-based auto-archive sweep matches 0 of 180 repos** on this data, at any
+    threshold a human would pick. It also collides head-on with §11.3's binding
+    user decision (*"No in-suite teardown, ever"*, per-repo interactive
+    confirmation) and with §11.8's *"deliberately no `--yes-to-all`: no
+    non-interactive fast path may defeat the review step"* — an automated sweep
+    **is** a non-interactive fast path. The **scheduled janitor** option carries
+    the same collision and additionally **has no host**: §9-Q12 records that no
+    CI exists in any of the five repos (zero `.github/workflows` anywhere).
+    So the **only** design-compatible exit remains the one this bullet's parent
+    already names — a **dedicated throwaway org or bot account**, which isolates the
+    artifacts entirely at the cost of re-installing the App and re-pointing the
+    harness's context resolution. The real friction today is 180 sequential
+    `[y/N]` prompts with no batch mode, and that batch mode is precisely what the
+    binding decision forbids. **Plan row 67 therefore closes as documentation:
+    the accounting was wrong, the cost is not.**
 
 **Honest coverage losses, stated rather than glossed:**
 
-- **The product's headline designed path ships un-exercised against real
-  GitHub.** `createUserRepo` sends `{name, private}` with no `auto_init`, so the
-  repo it creates has no commits and no `main`, and `scaffoldProjectWorkflow`'s
-  `base: "main"` PR 422s. The stub masked this completely: it *claimed*
-  `default_branch: "main"` in its create response while a **separate** git-server
-  fixture independently seeded a real `main` — two fake backends sharing no
-  storage, so the gap was invisible. A correct fix is a design decision (it
-  touches `ProjectVersion`'s PR-number nullability), so it is **plan row 63** —
-  the highest-severity item this round surfaced, and a real product defect rather
-  than a test gap. Wireframe 13a's "Empty · created just now" badge implies the
-  same gap for a genuinely empty *existing* repo.
+- **The product's headline designed path shipped un-exercised against real
+  GitHub — CLOSED by plan row 63.** As round 3 left it, `createUserRepo` sent
+  `{name, private}` with no `auto_init`, so the repo it created had no commits
+  and no `main`, and `scaffoldProjectWorkflow`'s `base: "main"` PR 422'd. The
+  stub had masked this completely: it *claimed* `default_branch: "main"` in its
+  create response while a **separate** git-server fixture independently seeded a
+  real `main` — two fake backends sharing no storage, so the gap was invisible.
+  Row 63 landed **both halves**, because neither alone is sufficient: the api
+  now sends `auto_init: true` on that same single `POST /user/repos`, **and**
+  `scaffoldProjectWorkflow` bootstraps an unborn base ref itself
+  (`scaffold-project/workspace.ts` `ensureBaseRef`, inside the existing
+  `cloneToWorkspace` step) — which is the only thing that also fixes wireframe
+  13a's "Empty · created just now" *existing*-repo path, where there is no create
+  call to send `auto_init` on. **No `ProjectVersion` schema change was involved:
+  `prNumber` was already nullable at every layer, and the bootstrap preserves the
+  base PR, so it stays non-null in practice and 12a step 2's designed row 5
+  ("Pushed → opened & merged PR into `main`") stays literally true.** Proven by
+  `dbos tests/e2e/scaffold-project.e2e.ts`'s commit-less case, which provisions a
+  fixture with `autoInit: false` and reaches `succeeded`.
 - **The create-new-repo browser leg is uncovered** between tier 1's server half
   and the mock lane's client half (§11.4, plan row 66).
 - **The render lane's "overlay tracks real frames" is weak.** Row 62's acceptance
@@ -2161,10 +2413,22 @@ paid providers:
   clamps `durationInFrames` to `Math.max(1, …) === 1`, so there is essentially
   one frame to count. **Do not overclaim it.** The multi-scene cached-audio
   fixture that fixes it is **plan row 61**, deliberately out of scope.
-- **The nextjs mock lane is flaky** (~50% on one spec, two unrelated signatures),
-  pre-existing and unrelated to this round — it surfaced only because the lane
-  was run repeatedly enough. **Plan row 68.** Until it lands, a single green
-  mock-lane run is weak evidence.
+- **The nextjs mock lane was flaky** (~50% on one spec, apparently two unrelated
+  signatures), pre-existing and unrelated to this round — it surfaced only
+  because the lane was run repeatedly enough. **Plan row 68, now fixed**, and the
+  round-3 write-up above was **wrong about the cause in both halves**: the two
+  signatures were ONE bug, and it was not a budget being too tight. `gotoStudio`
+  waited on the **SSR'd** `studio-frame` testid, which is present in the first
+  HTML byte, so it returned before React hydrated; the lost `input` event and the
+  `-32000 Node does not have a layout object` are both consequences of acting on
+  a cold island. Measured 2/16 navigations, 100 % correlated with the node having
+  no `__reactProps$` key. The fix is a shared, unit-tested hydration gate
+  (`nextjs tests/e2e/helpers.ts`: `pollUntil` + `isHydratedSnapshot` +
+  `waitForHydrated`, gated on a non-zero box AND a `__reactProps$` key), and the
+  rule it encodes is **wait on a mount-gated testid or an explicit hydration
+  predicate, never on an SSR'd one**. The prior guidance — "until it lands, a
+  single green mock-lane run is weak evidence" — no longer applies; the row's
+  acceptance was met at 30/30 consecutive green.
 - **PEM normalisation now exists in three harness-visible places** (db-lib's,
   root's `signAppJwtLocal`, and the api's long-standing local one). Fenced by the
   byte-identical-signature unit test, but the drift risk is structural.

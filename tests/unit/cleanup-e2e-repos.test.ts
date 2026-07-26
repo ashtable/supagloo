@@ -318,8 +318,9 @@ describe("runCleanup", () => {
   });
 
   it("NEVER issues a DELETE, on any path", async () => {
-    // `delete_repo` is documented in .env.example for completeness, but this script
-    // must never call DELETE: archiving is reversible, deletion is not.
+    // `.env.example` tells you NOT to grant the `delete_repo` scope, and this is the
+    // assertion that backs that instruction: the script must never call DELETE on any
+    // path, because archiving is reversible and deletion is not.
     const { fetchImpl, calls } = makeFetch([
       {
         repos: [

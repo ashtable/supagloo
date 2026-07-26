@@ -293,10 +293,19 @@ graph TD
 All provider base URLs default to the **real** hosts in both services' env
 loaders (`https://openrouter.ai`, `https://platform.ai.gloo.com`,
 `https://api.youversion.com`, `https://api.github.com` / `https://github.com`)
-— "real-by-default ⇒ prod needs zero config". **Nothing overrides them any
-more**, in any lane: the provider-stub harness this diagram used to carry a
-`Stubs` node for is deleted in full (§5). Per-user OpenRouter/Gloo credentials
-live encrypted in Postgres rows, never in env config.
+— "real-by-default ⇒ prod needs zero config". The provider-stub harness this
+diagram used to carry a `Stubs` node for is deleted in full (§5), and **no lane
+overrides a provider base URL** any more — with exactly one deliberate exception,
+added by plan row 66 and named so it cannot be mistaken for stub wiring: the api
+also takes **`GITHUB_OAUTH_INTERNAL_BASE_URL`**, the SERVER-side half of the
+user-authorization host, which the test overlay points at the api itself
+(`http://api:4000`) so the containerised api can complete the create-new-repo
+code→token hop against its own double-gated test-only route. The PUBLIC
+`GITHUB_OAUTH_BASE_URL` — the URL the *browser* opens — is still overridden
+nowhere, which is the property that keeps row 62 item (e)'s
+`DNS_PROBE_FINISHED_NXDOMAIN` dissolved. Unset, the internal one resolves to the
+public one, so production still needs zero config. Per-user OpenRouter/Gloo
+credentials live encrypted in Postgres rows, never in env config.
 
 ## 4. Sequence Diagrams (as implemented today)
 
@@ -335,13 +344,13 @@ sequenceDiagram
     participant GH as GitHub (App API + git)
 
     opt create-new-repo path
-        UI->>GH: JIT user-auth redirect (zero-storage\ntoken hop, API-side exchange) → repo created
+        UI->>GH: JIT user-auth redirect (zero-storage\ntoken hop, API-side exchange) → repo created\n(auto_init: true — the repo has a real main)
     end
     UI->>API: POST /v1/projects (via BFF)
     API->>DB: create Project + ProjectJob\n(409 if a git-ops job is already in flight)
     API->>DB: DBOSClient.enqueue(scaffoldProjectWorkflow,\nworkflowID = jobId)
     W->>GH: mint installation token → verify repo access
-    W->>GH: clone → write Remotion scaffold →\ncommit v0.0.0 → push → PR → merge →\ncut working branch v0.0.1
+    W->>GH: clone → bootstrap main if the repo is\ncommit-less (existing-empty path) → write\nRemotion scaffold → commit v0.0.0 → push →\nPR → merge → cut working branch v0.0.1
     W->>DB: idempotent stage writes; finalize\nProject/ProjectVersion rows
     loop poll
         UI->>API: GET /v1/projects/:id/jobs/:jobId
@@ -468,9 +477,19 @@ overlay** (still explicit-`-f` only, never auto-merged into a plain
   http://localhost:9000` is load-bearing: the render spec's presigned download
   runs **in the browser**, which cannot resolve the `minio` hostname.
 
-No GitHub variable appears in it at all. `docker-compose.yml` already substitutes
-the five real `GITHUB_APP_*` from the untracked root `.env`, and the base URLs
-default to the real hosts.
+- **two** GitHub variables, both from plan row 66 and both named in the overlay's
+  own header: `GITHUB_OAUTH_INTERNAL_BASE_URL: http://api:4000` (the SERVER-side
+  half of the user-authorization host — the api calls itself; deliberately no new
+  container) and `GITHUB_E2E_EXCHANGE_TOKEN: ${GITHUB_E2E_EXCHANGE_TOKEN}`, the
+  narrow credential its double-gated test-only exchange route hands back. Neither
+  is a stub: everything after the exchange, including `POST /user/repos`, is real.
+
+No OTHER GitHub variable appears in it. In particular the PUBLIC
+`GITHUB_OAUTH_BASE_URL` is still absent everywhere — it is the browser's redirect
+target and must resolve from the user's machine. `docker-compose.yml` already
+substitutes the five real `GITHUB_APP_*` from the untracked root `.env`, and the
+base URLs default to the real hosts. `GITHUB_E2E_PAT_TOKEN` still never enters any
+container; row 66 minted the second, narrower token precisely so that stayed true.
 
 What stands in for the stubs, per provider:
 
@@ -497,11 +516,19 @@ What stands in for the stubs, per provider:
 The app is **real-by-default**: `supagloo-nodejs-api/src/config/env.ts` and
 `supagloo-nodejs-dbos/src/config/env.ts` define every provider base URL with the
 real host as the zod `.default()`. Today that default is simply *used* — the
-delta was **removing** the test-side overrides, not adding config. Two permanent
-unit guards keep it that way: an inverted overlay test asserting
-`docker-compose.test.yml` defines no stub service and no `GITHUB_*` key, and a
-`providers.e2e.ts` `beforeAll` asserting the AI-provider base URLs carry no stub
-override.
+delta was **removing** the test-side overrides, not adding config. Plan row 66 is
+the one place that adds any back, and it adds exactly two lines to the api service
+(§8, the OAuth public/internal split); it is called out here rather than left to be
+rediscovered as drift.
+
+Two permanent unit guards keep it that way: an inverted overlay test asserting
+`docker-compose.test.yml` defines no stub service and — over **every** `GITHUB_*`
+key present, not a fixed forbidden list — no GitHub variable beyond the two row-66
+exceptions it names explicitly, plus positive assertions that the internal base is
+set and the PUBLIC one is not; and a `providers.e2e.ts` `beforeAll` asserting the
+AI-provider base URLs carry no stub override, and that no dbos-visible GitHub
+variable names a local host (dbos has no OAuth base URL at all — the row-66
+variable is api-only, by design).
 
 What tests *do* need is **credentials and fixtures**:
 
@@ -568,17 +595,22 @@ These are load-bearing properties of today's test suite:
    bound by real latency — the wizard's readiness wait is 240 s against wireframe
    12a's designed ~20 s local ideal — and the gating suite can go red for reasons
    no code change caused: provider outages, rate limits, GitHub incidents.
-4. **The create-new-repo path is uncovered end to end, and is a real product
-   defect.** `createUserRepo` sends no `auto_init`, so the repo it creates has no
-   `main` and the scaffold's `base: "main"` PR 422s against real GitHub — masked
-   for a year by the stub claiming `default_branch: "main"` while a *separate*
-   git-server fixture seeded an actual `main`. The api-level spec keeps the server
-   half real by injecting a `fetchImpl` that intercepts **only** the OAuth token
-   exchange; the mock lane keeps the client half; the browser round trip in
-   between is uncovered because the one container-level seam
-   (`GITHUB_OAUTH_BASE_URL`) is simultaneously the browser's redirect target.
-   Tracked as plan rows **63** (the defect) and **66** (the split that would
-   restore the browser coverage).
+4. **The create-new-repo BROWSER leg is still uncovered end to end; the product
+   defect underneath it is fixed.** The defect was real: `createUserRepo` sent no
+   `auto_init`, so the repo it created had no `main` and the scaffold's
+   `base: "main"` PR 422'd against real GitHub — masked for a year by the stub
+   claiming `default_branch: "main"` while a *separate* git-server fixture seeded
+   an actual `main`. **Plan row 63 closed it with both halves**: the api sends
+   `auto_init: true`, and `scaffoldProjectWorkflow` bootstraps an unborn base ref
+   itself, so the *existing*-empty-repo path (wireframe 13a) — which has no create
+   call at all — works too. `dbos scaffold-project.e2e.ts` now scaffolds a
+   deliberately commit-less repo to `succeeded`. What remains uncovered is the
+   BROWSER round trip: the api-level spec keeps the server half real by injecting
+   a `fetchImpl` that intercepts **only** the OAuth token exchange, the mock lane
+   keeps the client half, and the leg in between is uncovered because the one
+   container-level seam (`GITHUB_OAUTH_BASE_URL`) is simultaneously the browser's
+   redirect target. Tracked as plan row **66** (the public/internal split that
+   would restore it).
 5. **Two YouVersion contracts remain imperfectly verified.** The Data Exchange
    client's routes were corrected against the live API (task 34-E5), but the
    sign-in verifier is still built to an invented `GET /auth/v1/userinfo`
@@ -586,22 +618,39 @@ These are load-bearing properties of today's test suite:
    item 1). `auth.e2e.ts` tests session/bearer mechanics with **zero** YouVersion
    egress; the live round trip is an env-gated spec that skips when its token is
    unset.
-6. **Repo emptiness is derived from `size === 0`**, which GitHub reports in KB
-   and computes asynchronously. Correct for fixtures the harness just created (a
-   live probe confirmed small real repos report `size: 0`), but the wizard's "use
-   existing empty repo" tab makes it load-bearing in production. Tracked as plan
-   row 65.
+6. ~~**Repo emptiness is derived from `size === 0`**~~ — **CLOSED by plan row
+   65.** GitHub reports `size` in KB and computes it asynchronously, so it lags
+   upward: `size > 0` is definitive not-empty, `size === 0` is only a candidate.
+   The api now resolves candidates with `GET /repos/:o/:r/commits?per_page=2`
+   (409 or ≤1 commit ⇒ empty; ≥2 ⇒ not empty; any other answer ⇒ fall back to
+   `size`), bounded at 8 in flight and skipped entirely when there are no
+   candidates. The `≤1 commit ⇒ empty` clause is deliberate: an `auto_init` repo
+   (one README commit) is still a valid scaffold target, which is what wireframe
+   13a's selectable "Empty · created just now" designs.
 7. **No CI exists in any of the five repos** (no `.github/workflows` anywhere),
    so there is no secrets-into-CI story and nothing is gated automatically —
    every suite is run by a human. Design-delta §9-Q12. Naming caveat that still
    holds: in `supagloo-nextjs`, `GLOO_CLIENT_ID`/`GLOO_CLIENT_SECRET` configure
    **Stagehand's own LLM**, and the app-under-test's Gloo credentials use
    distinct names.
-8. **The nextjs mock lane is flaky** — one spec fails roughly half of runs, in
-   two unrelated ways (a CDP layout error, and a 6 s wait the mock commit path
-   misses about a third of the time). Pre-existing, unrelated to provider work,
-   and tracked as plan row 68. Until it lands, a single green mock-lane run is
-   weak evidence.
+8. **The nextjs mock lane was flaky, and the originally-recorded diagnosis was
+   wrong on both counts.** The two signatures (a CDP `-32000 Node does not have a
+   layout object`, and `data-dirty="false" never became "true" within 6000ms`)
+   were **one bug**, not two, and neither was a timeout being too tight: the
+   spec's `gotoStudio` waited on `studio-frame`, which is **SSR'd**
+   (`app/studio/[id]/page.tsx` → `studio-app.tsx`), so its presence is in the
+   first HTML byte and is not a post-hydration signal. It returned while React
+   was cold, and from there a dispatched `input` event reached no `onChange` (so
+   the dirty flag never flipped — the event was LOST, not slow; the mock commit
+   path is 320 ms and the observed flip latency 0–16 ms, so raising the 6 s
+   constant would have been a no-op) and a click measured a node with no layout
+   box. Measured 2/16 navigations against a warm `next dev`, 100 % correlated
+   with the frame having no `__reactProps$` key. Fixed under plan row 68 by a
+   shared hydration gate in `supagloo-nextjs/tests/e2e/helpers.ts` — poll for a
+   non-zero bounding box **and** a `__reactProps$` key — applied to both
+   `gotoStudio` copies and the three latent fixed-sleep sites in
+   `studio.e2e.ts`. The standing rule it encodes: **wait on a mount-gated testid
+   or an explicit hydration predicate, never on an SSR'd one.**
 
 ## 6. Gaps / Not Yet Implemented
 

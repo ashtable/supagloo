@@ -113,11 +113,52 @@ describe("docker-compose.test.yml — test-enablement overlay", () => {
       "GITHUB_APP_PRIVATE_KEY",
     ];
 
+    /**
+     * The two — and ONLY two — `GITHUB_*` keys this overlay is allowed to set, both
+     * added by plan row 66 and both named here on purpose.
+     *
+     * Until row 66 this describe block was a FIXED eight-name list while §11.7 and
+     * `current-design.md` both described it as asserting "no `GITHUB_*` key appears
+     * on any service" — a strictly stronger claim than the code made. A ninth,
+     * unnamed GitHub variable would have slipped past in silence. So the guard is now
+     * an explicit ALLOW-LIST over every `GITHUB_*` key present: adding one to the
+     * overlay without adding it here (with a reason) fails this suite.
+     *
+     *  • GITHUB_OAUTH_INTERNAL_BASE_URL — the SERVER-side half of the user-auth host
+     *    split. It is precisely because it is NOT the browser's redirect target that
+     *    a Compose-internal hostname is safe on it; setting the PUBLIC one to an
+     *    internal host is still forbidden above, and still recreates item (e).
+     *  • GITHUB_E2E_EXCHANGE_TOKEN — the test-only credential the double-gated
+     *    exchange route hands back. Substituted by `${VAR}`, never inlined.
+     */
+    const ALLOWED_GITHUB_KEYS = new Set([
+      "GITHUB_OAUTH_INTERNAL_BASE_URL",
+      "GITHUB_E2E_EXCHANGE_TOKEN",
+    ]);
+
     it.each(forbidden)("no service overrides %s", (key) => {
       const offenders = serviceNames.filter(
         (name) => envMap(services[name].environment)[key] !== undefined,
       );
       expect(offenders).toEqual([]);
+    });
+
+    it("sets no GITHUB_* key beyond the two row-66 exceptions named above", () => {
+      const offenders: string[] = [];
+      for (const name of serviceNames) {
+        for (const key of Object.keys(envMap(services[name].environment))) {
+          if (!key.startsWith("GITHUB_")) continue;
+          if (ALLOWED_GITHUB_KEYS.has(key)) continue;
+          offenders.push(`${name}.${key}`);
+        }
+      }
+      expect(
+        offenders,
+        "every GitHub variable this overlay sets must be listed in " +
+          "ALLOWED_GITHUB_KEYS with the reason it is safe here — the docs describe " +
+          "this guard as covering ALL of GITHUB_*, and a fixed forbidden list " +
+          "cannot deliver that",
+      ).toEqual([]);
     });
 
     it("mentions no *-stub hostname or 480x stub port anywhere in the file", () => {
@@ -127,6 +168,55 @@ describe("docker-compose.test.yml — test-enablement overlay", () => {
       expect(text).not.toMatch(/github-stub/);
       expect(text).not.toMatch(/git-server/);
       expect(text).not.toMatch(/:480\d/);
+    });
+  });
+
+  describe("the row-66 test-only OAuth exchange seam", () => {
+    // Row 66 is the only row in this block that ADDS configuration, which cuts
+    // against §11.2's "the delta is REMOVING the test-side overrides, not adding
+    // config". These assertions are the price of that: both additions are asserted
+    // POSITIVELY, so deleting either one fails loudly here instead of presenting as
+    // a browser spec that cannot complete the create-new-repo round trip.
+    it("points the api's SERVER-side token exchange at the api itself", () => {
+      // The api calls ITSELF over the Compose network. Deliberately no new container:
+      // §10.7 "keeping dead stubs invites quiet re-adoption" and §10.9 "reintroducing
+      // stubs is not a mitigation".
+      expect(envMap(services.api?.environment).GITHUB_OAUTH_INTERNAL_BASE_URL).toBe(
+        "http://api:4000",
+      );
+    });
+
+    it("GITHUB_OAUTH_BASE_URL is still ABSENT from every service", () => {
+      // The browser half must keep resolving to real github.com from the USER's
+      // machine. This is the assertion that stops anyone "simplifying" the split back
+      // into one variable.
+      const offenders = serviceNames.filter(
+        (name) =>
+          envMap(services[name].environment).GITHUB_OAUTH_BASE_URL !== undefined,
+      );
+      expect(offenders).toEqual([]);
+    });
+
+    it("passes GITHUB_E2E_EXCHANGE_TOKEN by ${VAR} substitution, never as a literal", () => {
+      const raw = envMap(services.api?.environment).GITHUB_E2E_EXCHANGE_TOKEN;
+      expect(raw).toBe("${GITHUB_E2E_EXCHANGE_TOKEN}");
+    });
+
+    it("no service receives GITHUB_E2E_PAT_TOKEN (§11.8 stays true)", () => {
+      // The broad classic-`repo` PAT remains host-side harness-only. Row 66 minted a
+      // SECOND, narrower credential precisely so this property did not have to be
+      // reversed — it must never be quietly re-added here.
+      const offenders = serviceNames.filter(
+        (name) =>
+          envMap(services[name].environment).GITHUB_E2E_PAT_TOKEN !== undefined,
+      );
+      expect(offenders).toEqual([]);
+    });
+
+    it("inlines no token literal anywhere in the file", () => {
+      const text = readFileSync(OVERLAY, "utf8");
+      expect(text).not.toMatch(/gh[pousr]_[A-Za-z0-9]{16,}/);
+      expect(text).not.toMatch(/github_pat_[A-Za-z0-9_]{16,}/);
     });
   });
 

@@ -33,8 +33,9 @@ import {
  * `tests/unit/cleanup-e2e-repos.test.ts` with an injected `fetch` and a scripted stdin:
  *
  *  1. ARCHIVE ONLY. `PATCH /repos/:owner/:repo {"archived": true}`. This script NEVER
- *     issues a DELETE. Archiving is reversible; deletion is not. (`.env.example`
- *     documents the `delete_repo` PAT scope for completeness; nothing here uses it.)
+ *     issues a DELETE. Archiving is reversible; deletion is not. Nothing in this
+ *     project uses the `delete_repo` PAT scope, and `.env.example` tells you not to
+ *     grant it — there is no hard-delete escape hatch here, by design.
  *
  *  2. PER-REPO INTERACTIVE CONFIRMATION. One prompt per repo, showing the full
  *     owner/name, visibility, dates and the stamped description so the answer is
