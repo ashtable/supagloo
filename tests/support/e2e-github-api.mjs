@@ -220,10 +220,19 @@ function retryDelayMs(headers, attempt) {
  *
  * **Plan row 64 landed the product half (was deferred as "row N2").** The same semantics
  * now live in `supagloo-database-lib/src/github-retry.ts` (`isRetryableGithubStatus` /
- * `githubRetryDelayMs` / `withGithubRetry`) and back all four product GitHub callers:
+ * `githubRetryDelayMs` / `withGithubRetry`) and back FOUR product GitHub callers:
  * db-lib's own `mintInstallationToken`, the API's App client, the DBOS git-ops REST
  * client, and `publish-version`'s tag creator (design-delta §11.7 "one implementation,
  * four consumers").
+ *
+ * **Four, not "all" (round-4 review R7).** There is a FIFTH product GitHub caller and it
+ * is deliberately NOT wrapped: the API's `src/connections/github-user-auth-client.ts`,
+ * which POSTs the user-authorization code→token exchange and then really CREATES the
+ * repository (`POST /user/repos`). It runs synchronously inside a request the user's
+ * browser is waiting on rather than in a durable step, its exchange failure is a
+ * 200-with-error rather than a retryable status, and its create is non-idempotent. Do
+ * not read this paragraph as saying every product GitHub request is throttle-handled —
+ * the create-new-repo hop is not. See design-delta §7's two-layer rule.
  *
  * This harness copy STAYS — it is test code, and the product must never depend on it (nor
  * this on the product). The two are kept semantically IDENTICAL on purpose: the 60s cap on

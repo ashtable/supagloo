@@ -52,12 +52,24 @@ BEFORE the existing scaffold create path:
 > historical. The create-new-repo hop's SERVER half is now covered against real GitHub by
 > an api e2e that injects a `fetchImpl` intercepting **only**
 > `POST https://github.com/login/oauth/access_token` (returning the harness PAT) and
-> throwing on any other URL — so `POST /user/repos` really creates a repo. The BROWSER
-> half is a **reported deviation** (design-delta §11.4 tier 2, plan row 66): the one
-> container-level seam, `GITHUB_OAUTH_BASE_URL`, is simultaneously the browser's redirect
-> target. The "assert through the API's OWN effects, never stub introspection" instinct
-> below survives and is now the general rule. `repoOwner:"acme"` is gone — the owner is
-> discovered. See [[real-github-e2e-harness]].
+> throwing on any other URL — so `POST /user/repos` really creates a repo. The "assert
+> through the API's OWN effects, never stub introspection" instinct below survives and is
+> now the general rule. `repoOwner:"acme"` is gone — the owner is discovered. See
+> [[real-github-e2e-harness]].
+>
+> **UPDATE 2026-07-27 (plan row 66): the BROWSER half is no longer a deviation — it is
+> covered.** It used to be blocked because the one container-level seam,
+> `GITHUB_OAUTH_BASE_URL`, was simultaneously the browser's redirect target. Row 66
+> dissolved that by SPLITTING the variable: `GITHUB_OAUTH_BASE_URL` stays PUBLIC (the
+> browser's authorize redirect, still real github.com) and a new
+> `GITHUB_OAUTH_INTERNAL_BASE_URL` — used by `exchangeCode` and nothing else — is pointed
+> at `http://api:4000` by `docker-compose.test.yml`, so the containerised api completes
+> the code→token hop against ITSELF, where a double-gated test-only route answers.
+> nextjs `project-wizards-real.e2e.ts` **E-RNP1b** now drives all 11 hops green with
+> exactly ONE simulated (a human clicking "Authorize"); `POST /user/repos` and the whole
+> scaffold are real. That route also verifies the POSTed `client_id`/`client_secret`
+> against the App's configured pair, so it is not an open credential dispenser on the
+> api's published port.
 
 **github-stub already had all the GitHub-side routes** (`/login/oauth/access_token`
 → `ghu_stub_user_N`, `/user/repos` → `acme/<name>` requiring a `ghu_` token,

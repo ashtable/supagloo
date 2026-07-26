@@ -59,13 +59,25 @@
 #     go green while `POST /user/repos` 401s minutes later). A plain
 #     `docker compose up` is unaffected — it never sets SUPAGLOO_ENABLE_TEST_SEED, so
 #     the route is not registered and the token is never read.
+#     WHAT THAT CREDENTIAL IS, accurately: a classic `repo` PAT — NOT the fine-grained
+#     "repository-creation only, no `delete_repo`" token this header used to describe.
+#     No such token exists: fine-grained `Administration: write` is the SAME permission
+#     `DELETE /repos/{o}/{r}` requires, and `delete_repo` is a classic-PAT-only scope,
+#     so any token that can create repositories on an account can also delete them.
+#     The exposure is limited by the double gate (no route in a production image), by
+#     the value being read only when that route registers, and by the route's
+#     timing-safe check of the POSTed `client_id`/`client_secret` against the App's
+#     configured pair. Residual risk + the real exit (a dedicated throwaway/bot
+#     account) are recorded in design-delta §11.8/§11.9.
 #
 # `SECRETS_ENCRYPTION_KEY` is likewise NOT overridden (D15) — the old all-zeros
 # value here meant the api ENCRYPTED with a key dbos could not DECRYPT with.
 # `GITHUB_E2E_PAT_TOKEN` STILL never enters any container: it is host-side
-# harness-only, and row 66 minted the narrower `GITHUB_E2E_EXCHANGE_TOKEN` (repository
-# creation only, no `delete_repo`) precisely so that property did not have to be
-# reversed. Do not "simplify" the two into one.
+# harness-only, and row 66 minted a SECOND, SEPARATE `GITHUB_E2E_EXCHANGE_TOKEN`
+# precisely so that property did not have to be reversed. The second token is not
+# more narrowly SCOPED (see above — no create-without-delete GitHub credential
+# exists); it is independently REVOCABLE, and it is the only one a container sees.
+# Do not "simplify" the two into one.
 #
 # `tests/unit/compose-test-overlay.test.ts` enforces all of the above as a
 # permanent NO-STUB GUARD — including an ALLOW-LIST over every `GITHUB_*` key, so a

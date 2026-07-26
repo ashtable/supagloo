@@ -94,7 +94,7 @@ Two consequences worth knowing before you run a suite:
    `supagloo-e2e-delete-me-<slug>-<runid>` in the account where the GitHub App is
    installed, using `GITHUB_E2E_PAT_TOKEN` from your `.env`. A PAT is needed because the
    App installation grants no `administration` permission, so an installation token can
-   neither create nor archive a repository. Roughly 15-20 repos per full sweep.
+   neither create nor archive a repository. Roughly 18-23 repos per full sweep.
 
 There is **no in-suite teardown**, by design: you almost always need the repo to debug a
 red run, and the target account also holds real repos. Reclaim them yourself:

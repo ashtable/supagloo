@@ -152,9 +152,18 @@ line guessed "~149 accumulated today"; the real figures are:
 | oldest `created_at` | **2026-07-25T10:21:05Z** |
 | newest `created_at` | **2026-07-26T00:07:19Z** |
 
-**0 archived means the cleanup script has never been run — not once.** The only
-lifecycle-ending path in the system has never actually ended a lifecycle, so
-every figure above is a pure accumulation curve.
+**Superseded 2026-07-26T04:57Z — the script has now been run, and it works.** The
+table above was a pure accumulation curve because the cleanup script had never
+been invoked. The user then ran `npm run cleanup:github-e2e` for the first time
+and archived **199** repos, one interactive confirmation at a time. Re-measured
+after the rows-63–68 sweep: **601** owned, **218** prefixed, **199 archived**,
+**19 active**, all private. The population fell from 180 active to 19 even though
+this sweep's own runs added ~38 in the interval.
+
+Two things this settles: the reclamation path is real rather than theoretical, and
+the per-sweep figure is now **~18-23** (rows 63/65/66 each added one create — dbos
+`scaffold-unborn`, api `ghempty`, nextjs E-RNP1b). Archive-never-delete means all
+199 are recoverable.
 
 All 180 were created inside a **~14-hour window**, so the pain is *volume within
 a single day of iteration*, not *staleness*: an age-based auto-archive sweep —
@@ -167,22 +176,20 @@ confirmation.**
 
 ## Secrets
 
-`GITHUB_E2E_PAT_TOKEN` (classic PAT), `GITHUB_E2E_EXCHANGE_TOKEN` (fine-grained,
-plan row 66) and optional `SUPAGLOO_E2E_GITHUB_OWNER`, documented **by name only**
-in `.env.example`.
+`GITHUB_E2E_PAT_TOKEN` (classic PAT), `GITHUB_E2E_EXCHANGE_TOKEN` (a SECOND classic
+PAT, plan row 66) and optional `SUPAGLOO_E2E_GITHUB_OWNER`, documented **by name
+only** in `.env.example`.
 
-**Two GitHub credentials, deliberately, with different blast radii. Do not
-collapse them.**
+**Two GitHub credentials, deliberately SEPARATE. Do not collapse them — and do not
+believe the second one is more narrowly scoped than the first.**
 
 - `GITHUB_E2E_PAT_TOKEN` — classic `repo` PAT. **Host-side harness-only and never
   enters any container**: dbos's `makeRealHostEnvOverrides` deliberately omits it
   and the render child-env allowlist keeps it out of render children by
   construction. Row 66 needed a GitHub credential inside the api container and
   this property was NOT reversed to get one.
-- `GITHUB_E2E_EXCHANGE_TOKEN` — fine-grained, **repository-creation rights only,
-  deliberately no `delete_repo`** (cleanup archives; nothing in this project ever
-  needs delete). The **only** GitHub credential that enters a product container,
-  read by exactly one place: the api's double-gated test-only
+- `GITHUB_E2E_EXCHANGE_TOKEN` — the **only** GitHub credential that enters a product
+  container, read by exactly one place: the api's double-gated test-only
   `POST /login/oauth/access_token`. Reaches the container by `${VAR}` substitution
   from the root `.env` via `docker-compose.test.yml`; never inlined in tracked
   config. **With the test overlay applied and this unset, the api refuses to boot
@@ -190,6 +197,27 @@ collapse them.**
   a passing suite. A plain `docker compose up` never sets
   `SUPAGLOO_ENABLE_TEST_SEED`, so the route is not registered and the token is
   never read.
+
+  ⛔ **CORRECTION (round-4 review R6) — this file used to call it "fine-grained,
+  repository-creation rights only, deliberately no `delete_repo`". That credential
+  does not exist and cannot be minted. Do not send the user to mint one.** Any GitHub
+  token able to CREATE repositories on an account can also DELETE them: fine-grained
+  `Administration: write` is the SAME permission `DELETE /repos/{owner}/{repo}`
+  requires, and `delete_repo` is a **classic-PAT-only** scope, so "no `delete_repo`"
+  is a no-op phrase for a fine-grained token. What is deployed is a classic `repo`
+  PAT — the same shape as `GITHUB_E2E_PAT_TOKEN`, and a **distinct value** from it.
+  The word "narrower" in earlier notes should be read as "separate and independently
+  revocable", nothing more.
+
+  **What actually limits it:** (1) the double gate — the route does not exist in a
+  production image; (2) the value is read only when that route registers; (3) since
+  round 4 the route verifies the POSTed `client_id`/`client_secret` against
+  `GITHUB_APP_CLIENT_ID`/`GITHUB_APP_CLIENT_SECRET` with a timing-safe comparison, so
+  merely reaching the api's published `4000:4000` no longer yields the token; and (4)
+  `GITHUB_E2E_PAT_TOKEN` still enters no container. **Residual risk stands:** a
+  broadly-scoped credential over an account that also holds real repos is in a
+  container's env whenever the overlay is up. The only real shrink is a **dedicated
+  throwaway/bot account** (design-delta §11.9's named exit) — not a narrower scope.
 
 The route it feeds exists because `exchangeCode` is a SERVER-side hop with no
 in-process seam in a container. Row 66 split `GITHUB_OAUTH_BASE_URL` (browser) from

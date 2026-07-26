@@ -73,10 +73,15 @@ the side effect. The `reached` gate + that pre-resume read make it a REAL crash 
 not a false positive. (DBOS 4.x: `cancelWorkflow` preempts at next DBOS call;
 `resumeWorkflow` restarts from last completed step — both worked in-process.)
 
-**git flow (verified against real GitHub since task 62):** precondition repo has `main` +
-initial commit — the e2e's fixture repos are created with `auto_init: true` for exactly
-this reason, and **the product's own create-new-repo path does NOT do this**, which is
-plan row 63 (a real defect: `base: "main"` 422s on an unborn ref).
+**git flow (verified against real GitHub since task 62):** the e2e's fixture repos are
+created with `auto_init: true`, and the product's own create-new-repo path now does the
+same. **UPDATE — plan row 63 closed this**: `createUserRepo` sends `auto_init: true`,
+**and** the workflow no longer requires the precondition at all — it bootstraps an unborn
+base ref itself inside the clone/workspace step (`scaffold-project/workspace.ts`
+`ensureBaseRef`), which is what makes wireframe 13a's *existing*-empty-repo path work,
+where there is no create call to send `auto_init` on. A commit-less repo now scaffolds to
+`succeeded` (dbos `scaffold-project.e2e.ts` provisions one with `autoInit: false`). The
+old defect — `base: "main"` 422ing on an unborn ref — is fixed, not merely documented.
 clone→scaffold→`checkout -b v0.0.0`+commit→push v0.0.0→REST open PR(head=v0.0.0,
 base=main)→REST squash-merge→`checkout -b v0.0.1 v0.0.0`+push. We do NOT push `main`
 ourselves (real GitHub's API merge already moved it; the stub's merge is REST-only

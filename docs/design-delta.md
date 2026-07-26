@@ -1095,13 +1095,37 @@ document stated a blanket *"`shouldRetry`: false for 4xx"* and repeated it in th
 git-ops classifier's own doc-comment. **For GitHub that was wrong**, and the
 correction is not "retry 4xx" but "retry it one layer down":
 
-- **The client sleeps.** All four product GitHub callers — db-lib's
+- **The client sleeps.** Four product GitHub callers — db-lib's
   `mintInstallationToken`, the API's App client, the DBOS git-ops REST client, and
   `publish-version`'s tag creator — route their requests through db-lib's
   `withGithubRetry` (§11.7), which honours GitHub's own `Retry-After` /
   `x-ratelimit-reset` with a bounded budget of 4 attempts, capped at 60 s per wait
   (30 s for the blind exponential fallback). GitHub returns its **secondary (abuse)
   rate limit as `403 + Retry-After`**, so a 403 genuinely can change on retry.
+- **There is a FIFTH GitHub caller, and it is deliberately NOT wrapped (round-4
+  review R7).** Earlier drafts of this bullet said "**all** four", which was false and
+  invited a reader to assume coverage that does not exist. The API's
+  `github-user-auth-client.ts` — `exchangeCode` (the user-authorization code→token
+  POST) plus `createUserRepo` / `addRepoToInstallation` (which really do **create**
+  repositories) — makes raw `fetchImpl` calls with no retry wrapper, by design:
+  - it is the only caller authenticating with a **zero-storage USER token** rather
+    than an installation token, inside a **synchronous request the user's browser is
+    waiting on** — not a durable DBOS step. `withGithubRetry` can sleep up to 60 s
+    per attempt; doing that here would hold `POST /v1/projects/create-repo` open past
+    what wireframe 12a's wizard is built to wait for;
+  - `exchangeCode`'s failures do not present as retryable **statuses** at all: GitHub
+    answers a bad code with **HTTP 200 + `{"error":…}`** (D18-2), and the `code` is
+    single-use and short-lived, so replaying the same POST returns
+    `bad_verification_code` rather than succeeding. A status-based classifier has
+    nothing to act on;
+  - `createUserRepo` is a **non-idempotent CREATE**. A retry after an ambiguous 5xx
+    can hit a repo GitHub already made, turning the retry into the `422 name already
+    exists` that `isRetryableGithubStatus` refuses to retry anyway.
+  It is the same rule the App client's emptiness probe states in its own docblock —
+  **retry what you cannot fall back from; degrade what you can** — and that probe is
+  itself the one request inside a *wrapped* client that is deliberately left unwrapped.
+  If this caller ever needs throttle handling, it needs a different shape (surface the
+  retry to the wizard), not `withGithubRetry`.
 - **The DBOS classifier still says `403 ⇒ permanent`** (`isPermanentHttpStatus`),
   so the two layers do not multiply. It is also the only workable split: the step
   budget is `{maxAttempts: 4, intervalSeconds: 1, backoffRate: 2}` ≈ **7 s total**,
@@ -1324,8 +1348,20 @@ app database besides DBOS workflows, and the only S3 URL signer.
   a placeholder token would let a browser spec go green while `POST /user/repos` 401s
   minutes later.
 - **No bearer**, for the same reason `POST /v1/test/seed` cannot require one: the route's
-  purpose *is* to hand back a credential. The double gate, plus the fact that a
-  production image holds no such token at all, is the protection.
+  purpose *is* to hand back a credential. **But it is not unauthenticated (round-4 review
+  R5).** It verifies the POSTed `client_id` and `client_secret` against
+  `GITHUB_APP_CLIENT_ID`/`GITHUB_APP_CLIENT_SECRET` with a length-independent
+  timing-safe comparison, and answers a mismatch with GitHub's **own** rejection shape —
+  HTTP **200** and `{"error":"incorrect_client_credentials", …}`, the same 200-with-error
+  envelope D18-2 found for `bad_verification_code`, so a misconfigured lane surfaces as
+  the product's typed `GithubUserAuthExchangeError` with no test-only status branch. The
+  original handler took **no arguments at all**: it discarded the pair `exchangeCode`
+  faithfully sends and returned the live credential to anyone who could reach the api's
+  published `4000:4000`. The check costs the real client nothing and moves the bar to
+  "already holds the App's OAuth client secret". The gate is still evaluated FIRST, so a
+  wrong pair against a gated-off deployment is the same true 404 as a right one — the
+  credential check can never be used to probe whether the route exists. Nothing is logged:
+  not the exchange token, not either secret, and the refusal body echoes no input.
 - **Not under `/v1`, and that is structural, not stylistic:** the client requests a fixed
   `${base}/login/oauth/access_token` — GitHub's own URL shape, with no version prefix —
   so a `/v1`-scoped registration could never be reached. It therefore also gets its own
@@ -1833,7 +1869,9 @@ deliberately:** db-lib changes of any kind (no release, no pin bump, no
 create-new-repo *browser* leg (§11.4, plan row 66), client-side rate-limit
 retry (row 64), the `empty = size === 0` derivation (row 65), and plan rows
 59/60/61 (render UI copy, render driver lifecycle, and the heavy-lane render
-fixture).
+fixture). *This paragraph records **task 62's** scope and is historical: rows
+63-68 have all since landed (§11.4, §11.7-§11.9), including a db-lib release for
+row 64. Do not read it as a list of open work.*
 
 | Coupling (`current-design.md` §5.4 + round-2 residue) | Resolution | Where |
 |---|---|---|
@@ -2036,9 +2074,11 @@ thing is the token's PROVENANCE, not its validity.
 
 **The cost, stated rather than buried (§11.8):** this puts a GitHub credential
 inside the api container for the first time. It is NOT `GITHUB_E2E_PAT_TOKEN` —
-that property is preserved, not reversed — but a second, purpose-built
-`GITHUB_E2E_EXCHANGE_TOKEN` with repository-creation rights only and deliberately
-no `delete_repo`.
+that property is preserved, not reversed — but a second, separate
+`GITHUB_E2E_EXCHANGE_TOKEN`. Round 4 corrected what that second token *is*: it is
+**not** narrower in scope (no create-without-delete GitHub credential exists — see
+§11.8's correction), only separate, independently revocable, gate-dependent, and
+since round 4 also client-secret-checked at the route.
 
 **Groundwork item, the §10.4a analogue — LANDED in plan row 65.** §10.4a's
 standing rule is *"if the live routes differ, **the client changes, not the
@@ -2228,7 +2268,10 @@ emptiness derivation (**row 65**), and the OAuth public/internal split
   the product side**, in `supagloo-database-lib/src/github-retry.ts`
   (`isRetryableGithubStatus` / `githubRetryDelayMs` / `withGithubRetry`), consumed
   by db-lib's own `mintInstallationToken`, the API's App client, the DBOS git-ops
-  REST client and `publish-version`'s tag creator. The harness keeps its own copy —
+  REST client and `publish-version`'s tag creator. **Four consumers, not "all" the
+  product's GitHub callers (round-4 R7):** the API's `github-user-auth-client.ts`
+  (the code→token exchange and `POST /user/repos`) is a fifth and is deliberately
+  unwrapped — see §7's two-layer rule for the three reasons. The harness keeps its own copy —
   it is test code and the product must never depend on it — and the two are kept
   semantically identical on purpose; a divergence means one of them is honouring
   GitHub wrongly.
@@ -2257,22 +2300,53 @@ third added later by plan row 66:
   the render child-process env allowlist keeps it out of render children by
   construction. Round 3 noted that closing tier 2 would require putting it *into*
   the api container — a cost to weigh, not a free upgrade. **That cost was not
-  paid.** Row 66 closed tier 2 with a second, narrower credential instead, so this
+  paid.** Row 66 closed tier 2 with a second, SEPARATE credential instead, so this
   sentence stands unchanged and unreversed: this PAT still enters no container.
+  ("Separate", not "narrower" — see the correction in the next bullet.)
 - **`GITHUB_E2E_EXCHANGE_TOKEN`** (plan row 66) — the **only** GitHub credential
   that ever enters a product container, read by exactly one place: the api's
   double-gated test-only exchange route (§8), which hands it back as the user
-  access token. A **fine-grained** token with repository-**creation** rights only
-  and deliberately **no `delete_repo`** — the cleanup script archives and never
-  deletes, so no delete capability is needed anywhere in this project. It reaches
-  the container by `${GITHUB_E2E_EXCHANGE_TOKEN}` substitution from the untracked
-  root `.env`; the overlay guard asserts that (and that no literal token appears in
-  the file). Absent or blank while both gates pass, the api **refuses to boot,
-  naming the variable** — never a placeholder, never a silent self-disable, because
-  a spec that quietly stopped exercising the real exchange is a green lie (§10.8).
-  Its blast radius is deliberately smaller than the PAT's in both directions: it
-  cannot delete anything, and a production image holds neither it nor the gates
-  that would read it.
+  access token. It reaches the container by `${GITHUB_E2E_EXCHANGE_TOKEN}`
+  substitution from the untracked root `.env`; the overlay guard asserts that (and
+  that no literal token appears in the file). Absent or blank while both gates
+  pass, the api **refuses to boot, naming the variable** — never a placeholder,
+  never a silent self-disable, because a spec that quietly stopped exercising the
+  real exchange is a green lie (§10.8).
+
+  **Correction (round-4 review R6) — this bullet used to claim a narrowness the
+  credential does not and *cannot* have.** It said "a **fine-grained** token with
+  repository-**creation** rights only and deliberately **no `delete_repo`**", and
+  that "its blast radius is deliberately smaller than the PAT's in both directions:
+  it cannot delete anything". Five other documents repeated it. **It is not
+  obtainable.** Any GitHub token that can create repositories on an account can also
+  delete them: fine-grained **`Administration: write` is the same permission
+  `DELETE /repos/{owner}/{repo}` requires**, and **`delete_repo` is a
+  classic-PAT-only scope**, so "deliberately no `delete_repo`" is a no-op phrase for
+  a fine-grained token. There is no create-without-delete GitHub credential to mint,
+  so nothing should be minted in response to this correction. What is deployed is a
+  **classic PAT with `repo`** — the same shape as `GITHUB_E2E_PAT_TOKEN`, and a
+  *distinct value* from it.
+
+  **The mitigations that are actually real**, none of which is "the token is narrow":
+  1. the **double gate** — the route is not registered, so it does not exist, in any
+     image where `NODE_ENV === 'production'` or the flag is not the literal `'1'`;
+  2. the variable is **read only when that route registers** — a plain
+     `docker compose up` never sets the flag, so the value is never read at all;
+  3. the route **verifies the POSTed `client_id`/`client_secret`** against
+     `GITHUB_APP_CLIENT_ID`/`GITHUB_APP_CLIENT_SECRET` with a timing-safe comparison
+     before answering (round-4 R5 — before it, the handler read nothing from the
+     request and any caller who could reach the api's published `4000:4000` got a
+     live credential);
+  4. **`GITHUB_E2E_PAT_TOKEN` still enters no container**, and the two are separate
+     values, so either can be revoked without the other.
+
+  **Residual risk, stated plainly:** while the test overlay is up, a broadly-scoped
+  GitHub credential for a personal account that also holds real repositories sits in
+  the api container's environment, on a port published on every interface. Factor 3
+  raises the bar to "already holds the App's OAuth client secret", but it does not
+  remove the exposure. The mitigation that would genuinely shrink the blast radius is
+  the **dedicated throwaway org or bot account** §11.9 already names as row 67's only
+  design-compatible exit — **not** a narrower scope, because no narrower scope exists.
 - **`SUPAGLOO_E2E_GITHUB_OWNER`** — optional; only needed when the App has more
   than one installation.
 
@@ -2329,9 +2403,13 @@ paid providers:
   `Retry-After`/`x-ratelimit-reset` with capped backoff, and the header value is
   surfaced verbatim, never asserted on). **Product-side handling landed with plan
   row 64** and is now the same rule in the same shape: db-lib's `withGithubRetry`
-  backs all four product GitHub callers, honouring `Retry-After` /
+  backs four product GitHub callers, honouring `Retry-After` /
   `x-ratelimit-reset` over 4 bounded attempts capped at 60 s per wait, surfacing the
-  header verbatim on exhaustion. The DBOS step classifier deliberately keeps
+  header verbatim on exhaustion. **Not the fifth:** the API's
+  `github-user-auth-client.ts` (code→token exchange + `POST /user/repos`) is
+  deliberately unwrapped — a user-facing synchronous hop, a single-use code whose
+  failure is a 200-with-error rather than a status, and a non-idempotent create
+  (round-4 R7; the reasons are in §7's two-layer rule). The DBOS step classifier deliberately keeps
   `403 ⇒ permanent` so the client's backoff and the step budget do not multiply, and
   a bare (unthrottled) 403 is still retried by neither layer — see the two-layer
   rule in §7.
@@ -2347,7 +2425,7 @@ paid providers:
   stubs, **not** marking the lane optional, **not** adding a "fast mode" that
   skips real calls. Stated plainly and accepted.
 - **Durable third-party side effects — a brand-new risk axis.** No other provider
-  leaves persistent objects behind. Each full sweep creates ~15-20 private repos
+  leaves persistent objects behind. Each full sweep creates ~18-23 private repos
   in a **personal account that also holds the user's real repos**, reclaimed only
   by a human. Mitigated only by the unmistakable prefix, private visibility, the
   stamped description, the hard gate re-checked at the mutation site, and
@@ -2361,10 +2439,32 @@ paid providers:
     plus a scratch owner-repo listing; nothing mutated).** The account holds
     **563** owned repos, of which **180** match the fixture prefix: **0 archived,
     180 active, 180 private, 0 public**, oldest `created_at`
-    **2026-07-25T10:21:05Z**, newest **2026-07-26T00:07:19Z**. The "~15-20 per
-    full sweep" figure above is confirmed by this data. **Zero archived means the
-    interactive cleanup script has never been run** — the only lifecycle-ending
-    path in the system has never ended a lifecycle.
+    **2026-07-25T10:21:05Z**, newest **2026-07-26T00:07:19Z**. That reading
+    confirmed the "~15-20 per full sweep" figure **as the suite stood at that
+    instant**; the band above is now **~18-23** because three specs landed *after*
+    the reading, each adding exactly one create per run — dbos
+    `tests/e2e/scaffold-project.e2e.ts`'s commit-less
+    `provisionFixtureRepo("scaffold-unborn", …)` (row 63), api
+    `tests/e2e/github-connection.e2e.ts`'s dedicated
+    `provisionFixtureRepo("ghempty", …)` (row 65, whose file header now declares
+    **two** throwaway repos per run), and nextjs E-RNP1b's repo created *through
+    the product itself* via the restored create-new-repo round trip (row 66). That
+    **+3** is derived from those three call sites, not re-measured: the standing
+    totals above remain the untouched 00:07Z snapshot, and the age-based-exit
+    conclusion below is unaffected by it.
+  - **Re-measured after this sweep (2026-07-26T04:57Z, read-only), and the
+    lifecycle-ending path has now actually ended lifecycles.** The account holds
+    **601** owned repos, of which **218** match the fixture prefix: **199 archived,
+    19 active, 218 private, 0 public**. Between the two readings the user ran
+    `npm run cleanup:github-e2e` for the first time and archived **199** repos
+    interactively, one confirmation at a time. So the earlier "zero archived means
+    the script has never been run" is now **superseded**: the script has been run,
+    it worked exactly as designed, and the standing population fell from 180 active
+    to 19 despite this sweep's own runs adding ~38 more in the interval. Recorded
+    because §11.9's whole argument is that the accumulation is an *accepted,
+    reclaimable* cost rather than an unbounded one — that claim has now been
+    demonstrated rather than merely asserted. The **archive-never-delete** property
+    means all 199 remain recoverable.
   - **The shape of the accumulation kills one of row 67's three suggested exits
     outright.** All 180 candidates were created inside a **~14-hour window**, so
     the pain is *volume within a single day of iteration*, not *staleness*: an
@@ -2405,8 +2505,13 @@ paid providers:
   ("Pushed → opened & merged PR into `main`") stays literally true.** Proven by
   `dbos tests/e2e/scaffold-project.e2e.ts`'s commit-less case, which provisions a
   fixture with `autoInit: false` and reaches `succeeded`.
-- **The create-new-repo browser leg is uncovered** between tier 1's server half
-  and the mock lane's client half (§11.4, plan row 66).
+- **The create-new-repo browser leg was uncovered** between tier 1's server half
+  and the mock lane's client half — **CLOSED by plan row 66.** The public/internal
+  base-URL split plus the double-gated test-only exchange route mean `nextjs`
+  **E-RNP1b** now drives all 11 hops, with exactly one simulated (a human clicking
+  "Authorize"). It is no longer a coverage loss; what it left behind is a *cost*, one
+  GitHub credential inside the api container under the test overlay, accounted for in
+  §11.8 rather than here (§11.4).
 - **The render lane's "overlay tracks real frames" is weak.** Row 62's acceptance
   is met — every number the overlay shows now comes from the server rather than a
   fake ticker — but the render fixture is a blank manifest, and the template

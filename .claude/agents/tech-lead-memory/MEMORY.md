@@ -17,7 +17,7 @@ individual files, never here.
 - [Composition source of truth in repo](composition-source-of-truth-in-repo.md) — no Scene/Composition DB tables; supagloo.project.json manifest + S3 media
 - [MinIO for local S3 parity](minio-local-s3-parity.md) — compose infra: MinIO dev bucket, dual S3 endpoints, one Postgres with app + DBOS system DBs
 - [DBOS static workflows + enqueue pattern](dbos-static-workflows-and-enqueue-pattern.md) — hard constraint: static registration only; API enqueues via DBOSClient, workflowID = record id
-- [GitHub App installation tokens](github-app-installation-tokens.md) — store only installationId; mint short-lived tokens on demand, no repo token at rest; the JIT zero-storage create-new-repo hop — **which task 62 proved is BROKEN against real GitHub (no `auto_init` ⇒ unborn `main` ⇒ base PR 422s; plan row 63)**
+- [GitHub App installation tokens](github-app-installation-tokens.md) — store only installationId; mint short-lived tokens on demand, no repo token at rest; the JIT zero-storage create-new-repo hop — task 62 proved it was BROKEN against real GitHub (no `auto_init` ⇒ unborn `main` ⇒ base PR 422s), **FIXED by plan row 63** (api sends `auto_init: true` + the workflow bootstraps an unborn base ref); no schema change was needed
 - [OpenRouter media + AI SDK split](openrouter-media-and-ai-sdk-split.md) — OpenRouter covers video/TTS/music; generateObject for text, plain fetch for media; never hardcode model ids
 - [KJV/BSB generation only](kjv-bsb-generation-only.md) — superseded 2026-07-18: any YouVersion-licensed translation now allowed; KJV/BSB is just the default
 - [Prisma exact version pin](prisma-exact-version-pin.md) — consumers must pin database-lib's exact Prisma version, CI-enforced
