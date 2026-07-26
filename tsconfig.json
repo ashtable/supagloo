@@ -12,5 +12,12 @@
     "verbatimModuleSyntax": true,
     "noEmit": true
   },
+  // The real-GitHub e2e harness (`tests/support/e2e-github-{naming,api}.mjs`) and the
+  // cleanup script (`scripts/cleanup-e2e-repos.mjs`) are deliberately plain,
+  // zero-dependency ESM with NO build step — three sibling repos dynamic-import them at
+  // runtime and `npm run cleanup:github-e2e` must keep working without compiling
+  // anything (design-delta §11 / D1, D3, D22). They are typed for consumers by
+  // hand-written `.d.mts` files beside them, which TypeScript picks up through module
+  // resolution; the `.mjs` sources themselves are not in the program.
   "include": ["tests/**/*.ts", "vitest.config.ts", "vitest.e2e.config.ts"]
 }

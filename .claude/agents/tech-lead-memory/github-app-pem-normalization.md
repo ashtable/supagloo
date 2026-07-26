@@ -60,8 +60,26 @@ hence deterministic, so identical output proves the normalization is faithful
 rather than merely parseable.
 
 **Why no test ever caught it:** every db-lib/api unit test and the in-process api
-e2e supply a freshly `generateKeyPairSync`'d PEM with **real** newlines. The only
-thing exercising the documented env format is the containerized full-stack e2e,
+e2e supplied a freshly `generateKeyPairSync`'d PEM with **real** newlines. The only
+thing exercising the documented env format was the containerized full-stack e2e,
 which had never been run until 2026-07-24. Lesson: a fixture generated in-process
 will never reproduce an env-plumbing format bug — pin the documented wire/env
 format explicitly in a unit test.
+
+**Follow-through 2026-07-25 (task 62).** The generated-throwaway-keypair fixtures
+that hid this are **gone from every e2e**: all four repos' GitHub e2e now load the
+REAL App PEM from root's `.env` and fail fast by name if it is missing, so the
+documented env format is exercised on every e2e run rather than only in a unit
+test. Two structural consequences worth carrying:
+
+- **api and dbos pass db-lib's own `signAppJwt` into the e2e harness's
+  `discoverInstallation`**, so the harness exercises the PRODUCT signer. A broken
+  product signer now fails the harness loudly instead of being masked by a second
+  implementation.
+- **There are THREE harness-visible PEM-normalisation implementations** — db-lib's
+  `normalizePemNewlines` (the choke point), root's `signAppJwtLocal` (root and
+  nextjs have no db-lib), and the api's long-standing local `normalizePrivateKey`
+  in `github-app-client.ts`. Root's copy is fenced by the same test bar described
+  above: escaped and real-newline forms must produce a **byte-identical
+  signature**. The drift risk is structural, and is recorded as such in
+  design-delta §11.9. See [[real-github-e2e-harness]].

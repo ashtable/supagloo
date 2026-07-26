@@ -48,6 +48,17 @@ BEFORE the existing scaffold create path:
   OAuth creds, DISTINCT from `GITHUB_APP_PRIVATE_KEY`). `GITHUB_OAUTH_BASE_URL` already
   existed. env.test.ts `validEnv()` carries both.
 
+> **UPDATE 2026-07-25 (task 62): the github-stub is DELETED**, so the paragraph below is
+> historical. The create-new-repo hop's SERVER half is now covered against real GitHub by
+> an api e2e that injects a `fetchImpl` intercepting **only**
+> `POST https://github.com/login/oauth/access_token` (returning the harness PAT) and
+> throwing on any other URL — so `POST /user/repos` really creates a repo. The BROWSER
+> half is a **reported deviation** (design-delta §11.4 tier 2, plan row 66): the one
+> container-level seam, `GITHUB_OAUTH_BASE_URL`, is simultaneously the browser's redirect
+> target. The "assert through the API's OWN effects, never stub introspection" instinct
+> below survives and is now the general rule. `repoOwner:"acme"` is gone — the owner is
+> discovered. See [[real-github-e2e-harness]].
+
 **github-stub already had all the GitHub-side routes** (`/login/oauth/access_token`
 → `ghu_stub_user_N`, `/user/repos` → `acme/<name>` requiring a `ghu_` token,
 `PUT .../repositories/:id` → 204). **GOTCHA: the github-stub has NO reset/introspection

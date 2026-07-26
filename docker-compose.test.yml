@@ -1,93 +1,63 @@
-# TEST-ONLY overlay (Task #9). Invoked EXPLICITLY:
+# TEST-ENABLEMENT overlay. Invoked EXPLICITLY:
 #
 #   docker compose -f docker-compose.yml [-f docker-compose.override.yml] \
 #                  -f docker-compose.test.yml up -d --build
 #
-# Docker Compose auto-merges ONLY `docker-compose.override.yml` — never a
-# `.test.yml` — so this overlay never touches a plain `docker compose up` and its
-# stub servers NEVER ship in a production image. The root e2e globalSetup adds
-# these `-f` flags automatically.
+# ============================================================================
+# WHY THIS FILE STILL EXISTS — READ BEFORE DELETING IT.
+# ============================================================================
+# It was born (Task #9) as the PROVIDER-STUB overlay. Task 34-E8 deleted the
+# openrouter/gloo/youversion stubs; task 62 (design-delta §11, D8/D20) deleted the
+# last two — the GitHub REST stub and the local git smart-HTTP server, along with
+# the whole `tests/stubs/**` directory — so EVERY e2e lane now reaches real
+# github.com / api.github.com. Nothing in this file stubs anything any more.
 #
-# Two stub services (one shared ./tests/stubs image, selected by STUB_KIND) — the
-# GitHub REST stub plus a local git smart-HTTP server for real clone/push flows.
-# Task 34-E8 (design-delta §10.7) DELETED the openrouter/gloo/youversion stubs: the
-# three real providers are now exercised for real by the backend e2e suites, so the
-# API needs no provider-URL override for them (real-by-default takes over). Only the
-# GitHub `api` override survives, demonstrating the env-overridable base-URL
-# convention: the API reaches GitHub at its INTERNAL Compose-network name.
+# Its surviving reason to exist is TEST ENABLEMENT, and it is not optional:
+#
+#   * `NODE_ENV: development` + `SUPAGLOO_ENABLE_TEST_SEED: "1"` double-gate the
+#     api's `POST /v1/test/seed` route, which EVERY nextjs real-stack Stagehand
+#     spec obtains its real session through. The base compose pins
+#     NODE_ENV: production and the Dockerfile bakes ENV NODE_ENV=production, so
+#     without BOTH values here that route hard-404s and every real-stack spec
+#     fails at its first step. Those two lines are plan row 62 item (a)'s fix.
+#
+#   * The `S3_*` block points the api at MinIO. `S3_PUBLIC_ENDPOINT` is
+#     load-bearing for the render spec's thumbnail proof (E-RR3): the presigned
+#     download runs IN THE BROWSER, which cannot resolve the `minio` hostname.
+#
+# Neither may EVER merge into a plain `docker compose up`. Docker auto-merges only
+# `docker-compose.override.yml`, never a `.test.yml`, which is exactly why the
+# test-seed gates live here and not in the base file. The root e2e globalSetup (and
+# the api / dbos / nextjs ones) add these `-f` flags automatically.
+#
+# NO GitHub VARIABLE APPEARS BELOW, DELIBERATELY.
+# `docker-compose.yml` already substitutes all five real `GITHUB_APP_*` from the
+# untracked root `.env`, and the base URLs default to github.com via the api's zod
+# schema. Deleting the old overrides IS the whole of row 62 item (b), and item (e)
+# dissolves with them: `GITHUB_OAUTH_BASE_URL` is simultaneously a server-side
+# token-exchange target AND a browser redirect target, so any Compose-internal
+# hostname could only ever satisfy one of the two (that was the
+# DNS_PROBE_FINISHED_NXDOMAIN artifact). https://github.com satisfies both.
+# `SECRETS_ENCRYPTION_KEY` is likewise NOT overridden (D15) — the old all-zeros
+# value here meant the api ENCRYPTED with a key dbos could not DECRYPT with.
+# `GITHUB_E2E_PAT_TOKEN` never enters any container: it is host-side harness-only.
+#
+# `tests/unit/compose-test-overlay.test.ts` enforces all of the above as a
+# permanent NO-STUB GUARD, so the pattern cannot creep back.
 services:
-  github-stub:
-    build: ./tests/stubs
-    image: supagloo-provider-stub:test
-    environment:
-      STUB_KIND: github
-      PORT: "8080"
-      # clone_url values the create-repo endpoint returns point at the git-server.
-      GIT_SERVER_INTERNAL_URL: http://git-server:8080
-    ports:
-      - "4801:8080"
-
-  git-server:
-    build: ./tests/stubs
-    image: supagloo-provider-stub:test
-    environment:
-      STUB_KIND: git
-      PORT: "8080"
-      GIT_REPOS_ROOT: /repos
-    ports:
-      - "4805:8080"
-
-  # Forward-looking: point the API at the internal stub URLs (the convention this
-  # task establishes in src/config/env.ts). The Task #11 GitHub connection routes
-  # consume the GitHub App vars below. The containerized-API full-stack e2e is now
-  # ENABLED (it is how the nextjs real-stack Stagehand specs run), and the task-10
-  # test-seed gates are set at the bottom of this block.
-  #
-  # GITHUB_APP_PRIVATE_KEY is deliberately NOT overridden here: it is a real secret,
-  # so it stays in the untracked root .env and reaches the api via the base
-  # docker-compose.yml's `${GITHUB_APP_PRIVATE_KEY}` substitution — same as dbos.
-  # Never inline PEM material into this file; it is tracked in git.
   api:
     environment:
-      GITHUB_API_BASE_URL: http://github-stub:8080
-      # KNOWN COSMETIC ARTIFACT (harness-only, not a product bug): this value is
-      # used BOTH server-side (POST .../login/oauth/access_token from inside the api
-      # container) and as a BROWSER redirect target (.../login/oauth/authorize, and
-      # the install-picker URL). A Compose-internal hostname only satisfies the
-      # former, so during e2e the browser's fire-and-forget authorize popup shows
-      # DNS_PROBE_FINISHED_NXDOMAIN for `github-stub`. That is EXPECTED and does not
-      # fail anything: tests/e2e/connect-helpers.ts never uses that popup — it drives
-      # a throwaway page straight to the client callback, simulating GitHub's
-      # redirect-back. Production is unaffected (there this is https://github.com,
-      # reachable by both browser and server). Do NOT "fix" it by pointing at
-      # localhost:4801 — that breaks the server-side token exchange, since localhost
-      # inside the container is the container. A real fix would need a host
-      # /etc/hosts entry for `github-stub` or a public/internal split like S3's.
-      GITHUB_OAUTH_BASE_URL: http://github-stub:8080
-      GITHUB_APP_ID: "123456"
-      GITHUB_APP_SLUG: supagloo-test
-      # Task #26 create-new-repo JIT hop — api-only, placeholder like the App-JWT
-      # trio above (github-stub doesn't validate these against a real registry).
-      GITHUB_APP_CLIENT_ID: supagloo-test-client-id
-      GITHUB_APP_CLIENT_SECRET: supagloo-test-client-secret
-      # Task #12 secrets key — a deterministic all-zero 64-hex test key (32 bytes).
-      # Real deployments generate a distinct one with `openssl rand -hex 32`.
-      SECRETS_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
-      # Task #13 — MinIO isn't part of the provider-stub harness (it's the real
-      # infra service from docker-compose.yml, shared by prod and test compose).
+      # MinIO wiring (Task #13). MinIO is real infra from docker-compose.yml, shared
+      # by prod and test compose — it was never part of any stub harness.
       S3_ENDPOINT: http://minio:9000
       S3_PUBLIC_ENDPOINT: http://localhost:9000
       S3_BUCKET: supagloo-dev
       S3_ACCESS_KEY: supagloo
       S3_SECRET_KEY: supagloo-dev
       S3_REGION: us-east-1
-      # Task #10's flag-gated `POST /v1/test/seed` seam, which every nextjs
-      # real-stack Stagehand spec obtains its session through (plan.md task 23:
-      # "obtain a *real* session via the flag-gated POST /v1/test/seed instead of
-      # faking browser state"). The endpoint hard-404s unless BOTH gates pass, and
-      # neither was ever set for the containerized API: the base compose pins
-      # NODE_ENV: production (and the Dockerfile bakes ENV NODE_ENV=production),
-      # and no compose file set the flag at all. Both belong HERE, in the test
-      # overlay, which never ships in a production image.
+      # Task #10's flag-gated `POST /v1/test/seed` seam (plan.md task 23: "obtain a
+      # *real* session via the flag-gated POST /v1/test/seed instead of faking
+      # browser state"). BOTH gates are required — see the header. DELETING EITHER
+      # LINE RE-BREAKS ROW 62 ITEM (a).
       NODE_ENV: development
       SUPAGLOO_ENABLE_TEST_SEED: "1"

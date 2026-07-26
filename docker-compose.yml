@@ -162,6 +162,12 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      # Task 62 / §11 (D18-3). `renderWorkflow` uploads output.mp4 + thumb.jpg to the
+      # `supagloo-dev` bucket, so the worker needs the one-shot bucket creation to have
+      # completed — previously only the `api` waited for it, and a cold
+      # `docker compose up` could start the worker first.
+      minio-init:
+        condition: service_completed_successfully
 
   nextjs:
     build:

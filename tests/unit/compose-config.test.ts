@@ -13,6 +13,7 @@ interface ComposeService {
   command?: unknown;
   ports?: unknown;
   volumes?: unknown;
+  environment?: unknown;
   healthcheck?: { test?: unknown };
   depends_on?: unknown;
 }
@@ -52,6 +53,21 @@ function volumeMounts(volumes: unknown): string[] {
     }
     return "";
   });
+}
+
+/** Read an environment value from either map-form ({KEY: val}) or list-form ("KEY=val"). */
+function envValue(environment: unknown, key: string): string | undefined {
+  if (Array.isArray(environment)) {
+    const hit = environment
+      .map(String)
+      .find((entry) => entry.startsWith(`${key}=`));
+    return hit ? hit.slice(key.length + 1) : undefined;
+  }
+  if (environment && typeof environment === "object") {
+    const val = (environment as Record<string, unknown>)[key];
+    return val === undefined ? undefined : String(val);
+  }
+  return undefined;
 }
 
 function healthcheckTestText(hc: ComposeService["healthcheck"]): string {
@@ -115,6 +131,25 @@ describe("docker-compose.yml", () => {
       const volumes = compose.volumes ?? {};
       expect(Object.keys(volumes)).toContain("pgdata");
       expect(Object.keys(volumes)).toContain("minio-data");
+    });
+  });
+
+  describe("PART V invariant 5 — api and dbos share ONE secrets key", () => {
+    // Task 62 / §11 (D15). Previously unasserted, and the test overlay had silently
+    // broken it: the api encrypted with an all-zeros override while dbos decrypted
+    // with the base compose's well-known dev key, so `decryptSecret` returned
+    // AUTH_FAILED for any api-written provider credential inside a workflow.
+    it("pins byte-identical SECRETS_ENCRYPTION_KEY values", () => {
+      const apiKey = envValue(services.api?.environment, "SECRETS_ENCRYPTION_KEY");
+      const dbosKey = envValue(services.dbos?.environment, "SECRETS_ENCRYPTION_KEY");
+      expect(apiKey).toBeDefined();
+      expect(dbosKey).toBeDefined();
+      expect(apiKey).toBe(dbosKey);
+    });
+
+    it("is not an all-zeros key (that value was the overlay bug's fingerprint)", () => {
+      const apiKey = envValue(services.api?.environment, "SECRETS_ENCRYPTION_KEY");
+      expect(apiKey).not.toMatch(/^0+$/);
     });
   });
 

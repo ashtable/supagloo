@@ -1,6 +1,6 @@
 ---
 name: render-workflow-gotchas
-description: Two verified gotchas from task 36 — DBOSWorkflowCancelledError never sets .name (so name-matching silently misses every cancel), and memoized steps + an ephemeral workspace require 4-level self-healing; plus the stale git-server fixture trap when the Remotion template changes
+description: Two verified gotchas from task 36 — DBOSWorkflowCancelledError never sets .name (so name-matching silently misses every cancel), and memoized steps + an ephemeral workspace require 4-level self-healing; plus the byte-deterministic base commit, whose stale-fixture trap task 62 RESOLVED BY DELETING the git-server (per-run real-GitHub fixture repos now)
 metadata:
   type: constraint
 ---
@@ -50,9 +50,18 @@ cannot be resumed.
 ## 3. Changing the Remotion template invalidates existing `v0.0.0` branches
 
 `scaffoldProjectWorkflow`'s base commit is byte-deterministic. Changing any generated file
-changes that SHA, so a git-server that still holds a repo scaffolded by the OLD template
-rejects the new push as non-fast-forward. The scaffold e2e uses FIXED repo names
-(`acme/empty-one`/`empty-two`), so it fails on a reused stack until the git-server is
-recreated (`docker compose ... up -d --force-recreate git-server`). Production is
-unaffected (scaffold runs once per repo, guarded by the task-18 dedup) — but expect it
-whenever `src/remotion/templates.ts` changes.
+changes that SHA, so ANY repo that still holds a scaffold from the OLD template rejects
+the new push as non-fast-forward.
+
+**RESOLVED 2026-07-25 (task 62) — BY DELETION, not by documentation.** The trap used to be
+a *stale fixture* problem: the git-server container held FIXED repo names
+(`acme/empty-one`/`empty-two`) across runs, so a template change failed on a reused stack
+until you ran `docker compose ... up -d --force-recreate git-server`. That container no
+longer exists, and fixture repos are now **per-run** throwaways on real github.com
+(`supagloo-e2e-delete-me-<slug>-<runId>`, `auto_init`) — a fresh repo every time, so a
+template change cannot collide with a stale one. See [[real-github-e2e-harness]].
+
+**The underlying determinism property is unchanged and still load-bearing**: it is exactly
+why per-run repo names are MANDATORY. Any future "cache/reuse the fixture repo"
+optimisation silently reintroduces this rejection. Production is unaffected either way
+(scaffold runs once per repo, guarded by the task-18 dedup).

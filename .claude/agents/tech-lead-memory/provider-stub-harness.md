@@ -1,21 +1,45 @@
 ---
 name: provider-stub-harness
-description: Task 9 (M2) built the provider-stub e2e harness — env-overridable base URLs, containerized zero-dep stubs (github/openrouter/gloo/youversion) + local git smart-HTTP server, docker-compose.test.yml overlay; conventions tasks 10-47 point at
+description: HISTORICAL ONLY — task 9's provider-stub e2e harness (stub HTTP servers + local git smart-HTTP server + docker-compose.test.yml overrides). FULLY DELETED by task 62; nothing here is live. For today's harness read real-github-e2e-harness.
 metadata:
   type: convention
 ---
 
+> # ⛔ DELETED — DO NOT BUILD AGAINST ANYTHING IN THIS FILE
+>
+> **RETIRED 2026-07-25 (task 62, [[real-github-e2e-harness]], design-delta §11.7).**
+> `tests/stubs/**` no longer exists — not the `github-stub`, not the `git-server`,
+> not the shared `STUB_KIND` image, not the `Dockerfile`, not the five root
+> self-tests. **Zero kinds, not two.** Every e2e lane in root/api/dbos/nextjs
+> reaches **real github.com / api.github.com**.
+>
+> Concretely, everything below is a description of code that is gone:
+> `/__stub/health`, `/__stub/calls`, `POST /__stub/reset`, `POST /__admin/repos`,
+> `POST /__admin/contents`, `http://github-stub:8080`, host ports 4801-4805,
+> `stubsReady()`, and the `GITHUB_API_BASE_URL`/`GITHUB_OAUTH_BASE_URL` overrides
+> in `docker-compose.test.yml`.
+>
+> **If you are about to re-add a stub service, a `/__stub/*` call, or a
+> `GITHUB_*_BASE_URL` override to a test: stop.** Two permanent unit guards will
+> fail you (`tests/unit/compose-test-overlay.test.ts` in root,
+> `tests/unit/e2e-real-github-seam.test.ts` in nextjs), and design-delta §10.7 /
+> §10.9 / §11.7 forbid it by policy — "keeping dead stubs invites quiet
+> re-adoption" is exactly why the sources were deleted rather than parked.
+>
+> Read [[real-github-e2e-harness]] instead. This file survives only so that the
+> git-server CGI gotchas below stay findable if anyone ever needs a local git
+> server again for an unrelated reason, and so tasks 9-38's history is readable.
+
 Built 2026-07-18 (plan task 9, completes M2). The as-built realization of
 [[e2e-test-infra-conventions]]. Deterministic outbound-provider harness every
-later e2e (tasks 10-47) points at. NEVER ships in production images.
+later e2e (tasks 10-38) pointed at. NEVER shipped in production images.
 
-**SUPERSEDED 2026-07-23 (task 34-E8, [[task-34-e8-harness-simplification]]):** the
-openrouter/gloo/youversion stubs + all their wiring were DELETED once the
-real-provider migration (34-E1..E7) was complete. The `STUB_KIND` image now serves
-only **github + git** (2 kinds, not 5); `docker-compose.test.yml`, both backend
-`global-setup.ts`, `dev-config.ts` `PROVIDERS`, and the stub self-tests were slimmed
-accordingly. Everything BELOW about the 3 provider stubs is HISTORICAL; only the
-github-stub + git-server parts remain live.
+**Superseded in two stages.** 2026-07-23 (task 34-E8,
+[[task-34-e8-harness-simplification]]): the openrouter/gloo/youversion stubs + all
+their wiring were DELETED once the real-provider migration (34-E1..E7) was
+complete, leaving the `STUB_KIND` image serving **github + git** only. 2026-07-25
+(task 62): those last two were deleted too, along with the whole directory. See
+the banner above. Everything below is HISTORICAL.
 
 **Stub servers** live in the ROOT repo at `tests/stubs/src/` — zero-dependency
 `node:http` factories (`createGithubStub`/`createOpenRouterStub`/`createGlooStub`/

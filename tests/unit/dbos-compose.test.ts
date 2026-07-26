@@ -79,6 +79,42 @@ describe("docker-compose.yml — Task #15 dbos worker service", () => {
     expect(dependsOnNames(services.dbos.depends_on)).toContain("migrate");
   });
 
+  it("waits for minio-init so the render bucket exists before a workflow uploads", () => {
+    // Task 62 / §11 (D18-3). `renderWorkflow` uploads output.mp4 + thumb.jpg to the
+    // `supagloo-dev` bucket, but only the `api` service waited for the one-shot
+    // bucket creation — so a cold `docker compose up` could start the worker before
+    // the bucket existed. depends_on must carry the completion CONDITION, not just
+    // the name (minio-init exits 0 and stays exited).
+    const dep = services.dbos.depends_on as
+      | Record<string, { condition?: string }>
+      | undefined;
+    expect(dependsOnNames(services.dbos.depends_on)).toContain("minio-init");
+    expect(dep?.["minio-init"]?.condition).toBe("service_completed_successfully");
+  });
+
+  describe("real-by-default GitHub wiring (task 62 / §11, F1)", () => {
+    // F1's permanent blind spot: nothing ever asserted that the WORKER was
+    // real-by-default. It always was (the base compose sets only the App id + PEM
+    // and lets the zod schema default the base URLs to github.com) — but nothing
+    // stopped a future overlay-style override landing here. Now something does.
+    it.each([
+      "GITHUB_API_BASE_URL",
+      "GITHUB_OAUTH_BASE_URL",
+      "GITHUB_GIT_BASE_URL",
+    ])("does not override %s (the zod default is github.com)", (key) => {
+      expect(envValue(services.dbos.environment, key)).toBeUndefined();
+    });
+
+    it("takes the real App id + PEM from the root .env by ${VAR} substitution", () => {
+      expect(envValue(services.dbos.environment, "GITHUB_APP_ID")).toBe(
+        "${GITHUB_APP_ID}",
+      );
+      expect(envValue(services.dbos.environment, "GITHUB_APP_PRIVATE_KEY")).toBe(
+        "${GITHUB_APP_PRIVATE_KEY}",
+      );
+    });
+  });
+
   it("wires the app db and the DBOS system db as separate URLs", () => {
     const appUrl = envValue(services.dbos.environment, "DATABASE_URL");
     const systemUrl = envValue(services.dbos.environment, "DBOS_DATABASE_URL");

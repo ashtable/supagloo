@@ -35,12 +35,25 @@ remote-fetched parent), so a rebuilt v0.0.0 re-pushes as a clean no-op consisten
 with the SHA the checkpointed `commitBaseVersion` already recorded. Workspace path is
 deterministic `os.tmpdir()/supagloo-scaffold/<workflowId>`; removed in finalize.
 
-**At-least-once side effects.** Push = re-push same SHA ⇒ "up-to-date". Merge = stub
-returns 405 on double-merge ⇒ treated as idempotent already-merged. **PR-open is NOT
-idempotent vs the task-9 github stub** (no "get PR by head" route; always 201s a new
-PR) — production is saved by GitHub's 422-already-exists (the helper resolves the
-existing PR via GET), the stub is not. So the crash test crashes at a step BOUNDARY
-before the push step so it runs exactly once.
+> **UPDATE 2026-07-25 (task 62, design-delta §11): this workflow's e2e now runs against
+> REAL github.com, and doing so exposed a real product bug in the idempotency path
+> described just below.** `findOpenPrByHead` queried `?head=…&state=open`. On a
+> retry/replay AFTER the base PR had been opened **and merged**, real GitHub 422s the
+> re-open, the `state=open` lookup then finds nothing (a merged PR is `closed`), and
+> `openPullRequest` re-throws it as a **PERMANENT** `GithubRestError` — killing a workflow
+> that was in fact recoverable. Fixed: renamed `findPrByHead`, widened to **`state=all`**,
+> pinned by 5 new unit tests. The stub never emitted 422, which is exactly why the path
+> was believed production-only. **The same rule binds test code**: assertion reads always
+> pass `state: "all"`, or a successfully-scaffolded repo reports zero PRs and the
+> non-duplication assertion becomes a green lie. See [[real-github-e2e-harness]].
+
+**At-least-once side effects.** Push = re-push same SHA ⇒ "up-to-date". Merge = 405 on
+double-merge ⇒ treated as idempotent already-merged. **PR-open was NOT idempotent vs the
+task-9 github stub** (no "get PR by head" route; always 201s a new PR) — production is
+saved by GitHub's 422-already-exists, whose handler resolves the existing PR via a
+`state=all` GET (see the update above; that lookup was `state=open` and permanently
+broken until task 62). So the crash test crashes at a step BOUNDARY before the push step
+so it runs exactly once.
 
 **Crash/replay test pattern (in-process, deterministic):** a module-level DI seam
 `__setBoundaryHook` (undefined in prod = no-op) that the workflow BODY awaits before
@@ -48,14 +61,22 @@ each step. Test: set the hook to park at the boundary before `pushOpenMergeBaseP
 (after commit checkpoints); enqueue; on "reached" → `DBOS.cancelWorkflow(jobId)`
 (preempts at the next DBOS call ⇒ push never runs), `rm -rf` the workspace (simulate a
 fresh worker), release the barrier, await the cancelled terminal state; then clear the
-hook and `DBOS.resumeWorkflow(jobId).getResult()`. Asserts `pullsOpened==1`,
-`pullsMerged==1`, `installationTokensIssued==1` (completed mint not re-run). The
-`reached` gate + a `pullsOpened===0` pre-resume assertion make it a REAL crash proof,
+hook and `DBOS.resumeWorkflow(jobId).getResult()`. **Assertions since task 62 (the stub
+counters are gone):** `countStepExecutions(client, jobId, "mintInstallationToken") === 1`
+and `… "pushOpenMergeBasePr" === 1` (durability, from the DBOS system DB — one StepInfo
+row per functionID, so an internal retry or a replayed resume cannot inflate it), PLUS
+`listPulls({state:"all"})` returning exactly one PR with `merged_at !== null`
+(non-duplication, read off real github.com). The pre-resume assertion is now the same
+`listPulls({state:"all"})` returning `[]` — strictly stronger than the old
+`pullsOpened===0`, because it observes the absence on the host that would actually hold
+the side effect. The `reached` gate + that pre-resume read make it a REAL crash proof,
 not a false positive. (DBOS 4.x: `cancelWorkflow` preempts at next DBOS call;
 `resumeWorkflow` restarts from last completed step — both worked in-process.)
 
-**git flow (correct vs BOTH stub and real GitHub):** precondition repo has `main` +
-initial commit (real GitHub `auto_init`; e2e seeds the git-server repo the same way).
+**git flow (verified against real GitHub since task 62):** precondition repo has `main` +
+initial commit — the e2e's fixture repos are created with `auto_init: true` for exactly
+this reason, and **the product's own create-new-repo path does NOT do this**, which is
+plan row 63 (a real defect: `base: "main"` 422s on an unborn ref).
 clone→scaffold→`checkout -b v0.0.0`+commit→push v0.0.0→REST open PR(head=v0.0.0,
 base=main)→REST squash-merge→`checkout -b v0.0.1 v0.0.0`+push. We do NOT push `main`
 ourselves (real GitHub's API merge already moved it; the stub's merge is REST-only
@@ -64,13 +85,15 @@ LOCAL base tree (content-identical to merged main) so it works even though stub-
 never moves.
 
 **Decisions worth remembering.**
-- `ensureRepoAccessible` reuses the EXISTING stub `GET /installation/repositories`
-  (auth: minted `ghs_` token) + Link pagination, finding `owner/repo`; absent ⇒ typed
-  non-retryable `RepoUnreachableError`. Rejected adding `GET /repos/:owner/:repo` to
-  the stub (cleaner real-GitHub check but edits the ROOT repo — out of task-17 scope).
-- New env var `GITHUB_GIT_BASE_URL` (prod `https://github.com`, stub the git-server) —
-  DBOS-only (the API never clones); `GITHUB_OAUTH_BASE_URL` can't double as it because
-  in test it points at the REST stub, not the git-server. Plus `GITHUB_API_BASE_URL` +
+- `ensureRepoAccessible` uses `GET /installation/repositories` (auth: minted `ghs_`
+  token) + Link pagination, finding `owner/repo`; absent ⇒ typed non-retryable
+  `RepoUnreachableError`. **Because absence is PERMANENT, the e2e MUST gate on
+  `waitForInstallationVisibility` before enqueueing** — a just-created real repo is
+  visible to the installation but not instantly, and losing that race produces a
+  non-retryable scaffold failure (task 62).
+- New env var `GITHUB_GIT_BASE_URL` (`https://github.com`) — DBOS-only (the API never
+  clones). It defaults to the real host and, since task 62, **nothing overrides it in any
+  lane**; it used to point at the git-server in test. Plus `GITHUB_API_BASE_URL` +
   required `GITHUB_APP_ID`/`GITHUB_APP_PRIVATE_KEY` (verbatim api names). Making the
   App vars required broke the noop e2e's `loadEnv` — the worker's env contract grew, so
   every e2e that calls `launchDbos` must now supply them.

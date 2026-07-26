@@ -10,6 +10,20 @@ Built 2026-07-18 (plan task 11). First GitHub code in the system. TDD plan:
 [[github-app-installation-tokens]]. Depends on [[auth-and-sessions-built]] (bearer
 `requireAuth`, `/v1` scope, seed seam) + [[provider-stub-harness]] (github-stub).
 
+> **UPDATE 2026-07-25 (task 62, design-delta §11): the github-stub is DELETED.** Every
+> "Stub changes" / "stub fixture" passage below is HISTORICAL. `github-connection.e2e.ts`
+> now runs against **real api.github.com** with a runtime-discovered installation and a
+> per-run private fixture repo; the `acme/{empty-one,empty-two,...}` 4-repo fixture set is
+> gone, and the two `/__stub/calls` call-count assertions were **reclassified to unit**
+> (`github-app-client.test.ts`, counting injected `fetchImpl`: two `listInstallationRepos`
+> ⇒ exactly two token mints + two `GET /installation/repositories`). In exchange the e2e
+> gained a proof the stub could never give — a REAL `Link: rel=next` pagination walk, since
+> the live account has 100+ repos, so `parseNextLink` is genuinely exercised.
+> Two live findings worth carrying: `exchangeCode` had to learn that real GitHub returns
+> **HTTP 200** with `{"error":"bad_verification_code"}` (now a typed
+> `GithubUserAuthExchangeError`), and `empty = size === 0` is retained deliberately but is
+> a known risk — plan row 65. See [[real-github-e2e-harness]].
+
 **Shared GitHub App primitives live in `database-lib/src/github.ts`** (exported
 from `src/index.ts` alongside `secrets.ts`), NOT the API — same "one impl for API
 + DBOS" precedent as `encryptSecret`. Two pure/injectable, env-free functions:

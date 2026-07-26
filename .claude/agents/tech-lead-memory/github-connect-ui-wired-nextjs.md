@@ -73,7 +73,18 @@ GitHub would. The callback stores via the real API; the main tab's poll flips to
 connected. Proof of realness: the wizard Done recap shows `✓ GitHub connected ·
 @acme` (the stub's `account.login`), not the mock `@ashsrinivas`.
 
-**Live API for the e2e** (extends task 23's "start the API manually" —
+> **⛔ STALE SETUP INSTRUCTIONS BELOW — DO NOT FOLLOW (task 62, design-delta §11).**
+> The github-stub is deleted. Do NOT set `GITHUB_API_BASE_URL`/`GITHUB_OAUTH_BASE_URL`
+> to `localhost:4801`, and do NOT generate a throwaway keypair with
+> `GITHUB_APP_ID=123456` — every GitHub e2e now uses the **real** App credentials from
+> root's `.env` against real api.github.com, and the containerised api gets them from
+> `docker-compose.yml`'s `${GITHUB_APP_*}` substitution. The `installation_id=42` /
+> `@acme` callback pattern below is likewise dead: the installation id and owner login
+> are DISCOVERED at run time. See [[real-github-e2e-harness]]. The *shape* of the
+> `sh.context.newPage()` → callback-URL trick is still the right idiom; only its inputs
+> changed.
+
+**Live API for the e2e** (HISTORICAL — extends task 23's "start the API manually" —
 `global-setup.ts` only boots/reuses `next dev`). Task 24's callback needs the API
 to SIGN a real App JWT + reach the stub, so — unlike task 23's dummy github env —
 run `~/code/supagloo-nodejs-api`'s `node dist/server.js` with

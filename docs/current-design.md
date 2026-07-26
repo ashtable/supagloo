@@ -1,7 +1,9 @@
 # Supagloo — Current System Design
 
-*Generated 2026-07-17; wholesale refresh 2026-07-22. Describes the system AS IT
-EXISTS TODAY in the code, not the intended end state.*
+*Generated 2026-07-17; wholesale refresh 2026-07-22; §5 rewritten wholesale
+2026-07-25 (design-delta §11 / plan task 62) with the §1/§2/§3/§4/§6 staleness it
+depended on. Describes the system AS IT EXISTS TODAY in the code, not the
+intended end state.*
 
 ## 1. Overview
 
@@ -13,10 +15,10 @@ DBOS durable-execution worker for long-running git-ops/AI jobs, and a shared
 Prisma/Zod database library — orchestrated locally via Docker Compose and
 deployed to Railway.
 
-**Maturity today: a real, working full-stack system through AI generation;
-rendering and the gallery are not built yet.** Per `docs/plan.md`'s task table,
-tasks 1–34 (milestones M1–M5's backend, and M4's UI wiring) are done; tasks
-35–54 are not.
+**Maturity today: a real, working full-stack system through AI generation **and
+rendering**; the gallery is not built yet.** Per `docs/plan.md`'s task table,
+tasks 1–38 plus 57, 58 and 62 are done (milestones M1–M5 and M6's render half);
+the gallery (39–41) and everything from 42 on are not.
 
 What is REAL and working end to end today:
 
@@ -31,20 +33,25 @@ What is REAL and working end to end today:
 - **API**: real auth/sessions (opaque DB-backed tokens, SHA-256 at rest),
   GitHub App / OpenRouter / Gloo connections (secrets encrypted at rest),
   projects/versions CRUD, manifest read, job creation + polling, S3 presigned
-  downloads, and the 4 AI-generation endpoints.
+  downloads, the 4 AI-generation endpoints, and the render endpoints.
 - **DBOS worker**: all four git-ops workflows (scaffold / import / commit /
-  publish — real clone/push/PR/merge/tag against git), all four AI-generation
-  workflows (script/storyboard, image, audio narration+music, video with
-  durable submit-then-poll), and a Remotion template/manifest→code generator.
+  publish — real clone/push/PR/merge/tag against **real github.com**), all four
+  AI-generation workflows (script/storyboard, image, audio narration+music,
+  video with durable submit-then-poll), a Remotion template/manifest→code
+  generator, and `renderWorkflow` (real `@remotion/renderer` encode → mp4 +
+  thumbnail in S3).
 - **UI**: sign-in/session, onboarding, all three connect flows, workspace +
-  project wizards, studio hydration from the real manifest, commit, publish,
-  and version history are wired to the real backend (a flag-gated mock mode
-  remains for pure-UI tests).
+  project wizards, studio hydration from the real manifest, the studio's
+  AI-generation controls, commit, publish, version history, and the 14c render
+  overlay are wired to the real backend (a flag-gated mock mode remains for
+  pure-UI tests).
+- **Testing**: every e2e lane in every repo runs against the **real** providers —
+  YouVersion, Gloo, OpenRouter **and GitHub**. There are no provider stubs left
+  (§5).
 
-What is genuinely NOT built yet (see §6): the render pipeline/API/UI, the
-gallery, the studio's AI-generation controls (the backend endpoints exist; the
-UI doesn't call them), the cleanup workflow, prod deploy wiring for api/dbos,
-CI of any kind, and a set of code-review-surfaced hardening follow-ups.
+What is genuinely NOT built yet (see §6): the gallery, the cleanup workflow,
+prod deploy wiring for api/dbos, CI of any kind, and a set of
+code-review-surfaced hardening follow-ups.
 
 ## 2. Repo Inventory
 
@@ -78,13 +85,19 @@ CI of any kind, and a set of code-review-surfaced hardening follow-ups.
     drift) and share S3 config with dual endpoints (`S3_ENDPOINT` internal,
     `S3_PUBLIC_ENDPOINT` for host-consumable presigned URLs).
   - `nextjs` (host 8000 → container 3000).
-- `docker-compose.test.yml` — an **explicit-`-f`-only** test overlay adding
-  the five provider-stub services and pointing the `api` service's provider
-  base URLs at them (see §5). Never merged into a plain `docker compose up`.
+- `docker-compose.test.yml` — an **explicit-`-f`-only** **test-enablement**
+  overlay. It stubs nothing (the five stub services are deleted); it carries the
+  api's `NODE_ENV: development` + `SUPAGLOO_ENABLE_TEST_SEED: "1"` test-seed
+  gates and its MinIO `S3_*` wiring (see §5.2). Never merged into a plain
+  `docker compose up`.
 - A gitignored `docker-compose.override.yml` redirects api/dbos build contexts
   at sibling checkouts to build in-flight code before submodule bumps.
-- Root test harness: `tests/{unit,e2e,stubs,support}` + split Vitest configs —
-  stack smoke tests, the stub-harness self-tests, and the stub server sources.
+- Root test harness: `tests/{unit,e2e,support}` + split Vitest configs — stack
+  smoke tests (including a DBOS-worker boot proof), the shared real-GitHub e2e
+  harness and repo-naming module in `tests/support/` (§5.2), and the guards that
+  keep stubs from creeping back. `tests/stubs/` is **deleted**.
+- `scripts/cleanup-e2e-repos.mjs` (`npm run cleanup:github-e2e`) — the
+  interactive, archive-only reclamation path for e2e fixture repos (§5.3).
 - `docs/` — this file, `design-delta.md`, `plan.md`, review artifacts.
 
 ### 2.3 `supagloo-database-lib` — shared Prisma + Zod library (real)
@@ -133,13 +146,16 @@ manifest⇄storyboard adapter); commit → real `POST …/commit` + job polling;
 publish wizard → real `POST …/publish` with stage polling; version-history
 dropdown from `GET …/versions`.
 
-**Still mocked / not wired in the UI**: the studio's AI-generation controls
-("→ AI" script, reroll visual, narrator/music) do not call
-`POST /v1/ai/generations` (task 35); the render overlay is still the fake
-frame-ticker (`render-model.ts`, task 38); there is no gallery UI (task 41).
-A flag-gated mock mode (`NEXT_PUBLIC_SUPAGLOO_DEMO` + `?mock=`) keeps the
-original all-client demo behavior for pure-UI regression specs; real-stack
-Stagehand specs use the extended `?seed=` seam instead (§5).
+**Also wired since**: the studio's AI-generation controls ("→ AI" script, reroll
+visual, narrator/music) call `POST /v1/ai/generations` and poll (task 35); the
+14c render overlay polls `GET /api/renders/:id` for real stages, frame counts and
+output spec, with cancel, "run in background" and a presigned download link (task
+38) — the fake frame-ticker is gone.
+
+**Still not wired in the UI**: there is no gallery UI (task 41). A flag-gated
+mock mode (`NEXT_PUBLIC_SUPAGLOO_DEMO` + `?mock=`) keeps the original all-client
+demo behavior for pure-UI regression specs — including a mock render ticker —
+while real-stack Stagehand specs use the extended `?seed=` seam instead (§5).
 
 **Deploy**: multi-stage Dockerfile; Railway builds `main` and serves
 https://supagloo.com/ (the UI is the only deployed service today).
@@ -169,10 +185,13 @@ loader; consumes db-lib via nested submodule + `file:` dep. Routes (all under
   `GET …/manifest?ref=` (synchronous GitHub Contents read + Zod parse),
   commit/publish endpoints, create-new-repo JIT user-token exchange.
 - **Files**: `GET /v1/files/presign-download` (ownership-scoped, signs against
-  `S3_PUBLIC_ENDPOINT`).
+  `S3_PUBLIC_ENDPOINT`; recognises the `render-thumbnail` key kind).
 - **AI generations**: `POST /v1/ai/generations` (kind-specific input schemas +
   kind→provider compatibility matrix → 422 before row creation), get/list,
   API-authoritative cancel.
+- **Renders**: `POST /v1/projects/:id/renders` (versionId, output spec,
+  `runInBackground` as a UI hint), `GET /v1/renders/:id`, `POST /:id/cancel`,
+  `GET /v1/renders?mine=1`, `GET /:id/download` (presigned).
 
 The API never runs the DBOS runtime — it enqueues via `DBOSClient`
 (`workflowID` = domain-record id, e.g. jobId) against `DBOS_DATABASE_URL`.
@@ -214,8 +233,15 @@ checkpoints/queues in `supagloo_dbos` via `DBOS_DATABASE_URL`. No HTTP surface.
 - **Remotion generator** (`src/remotion/`): pure manifest→source generator
   (deterministic, idempotent; the manifest is the sole source of truth —
   regeneration overwrites scene sources); e2e-verified with a real
-  `@remotion/bundler` bundle. **No `@remotion/renderer` usage yet** — the
-  render workflow is task 36 (not done).
+  `@remotion/bundler` bundle.
+- **Render workflow** (`renderWorkflow`, queue `render`, 1/worker — task 36):
+  clone at version → `npm ci --ignore-scripts` → download scene assets →
+  synthesize narration/music **before** bundling (Remotion snapshots assets at
+  bundle time) → `@remotion/bundler` → `@remotion/renderer` (real headless
+  Chromium, monotonic `framesDone` progress) → thumbnail → upload
+  `renders/{jobId}/output.mp4` + `thumb.jpg` to S3. Bundle and render run in a
+  **scrubbed-env child process**; cancel is a DBOS cancel on
+  `workflowID = renderJobId`.
 
 ## 3. Architecture — Current State
 
@@ -262,18 +288,15 @@ graph TD
 
     DBLib -.-> API
     DBLib -.-> DBOS
-
-    Stubs["provider stubs + git server\n(docker-compose.test.yml — TEST ONLY,\nexplicit -f, never in prod images)"]
-    Stubs -. "env-overridden base URLs\nin e2e (§5)" .- API
-    Stubs -. " " .- DBOS
 ```
 
 All provider base URLs default to the **real** hosts in both services' env
 loaders (`https://openrouter.ai`, `https://platform.ai.gloo.com`,
 `https://api.youversion.com`, `https://api.github.com` / `https://github.com`)
-— "real-by-default ⇒ prod needs zero config". Only test setup overrides them
-(§5). Per-user OpenRouter/Gloo credentials live encrypted in Postgres rows,
-never in env config.
+— "real-by-default ⇒ prod needs zero config". **Nothing overrides them any
+more**, in any lane: the provider-stub harness this diagram used to carry a
+`Stubs` node for is deleted in full (§5). Per-user OpenRouter/Gloo credentials
+live encrypted in Postgres rows, never in env config.
 
 ## 4. Sequence Diagrams (as implemented today)
 
@@ -327,11 +350,11 @@ sequenceDiagram
     UI-->>U: land in /studio/[slug]
 ```
 
-### 4.3 AI generation — video clip (real backend; UI wiring is task 35)
+### 4.3 AI generation — video clip (real end to end)
 
 ```mermaid
 sequenceDiagram
-    participant C as Caller (HTTP; the studio UI\ndoes NOT call this yet — task 35)
+    participant C as Caller (HTTP; the studio's\ngeneration controls call this — task 35)
     participant API as POST /v1/ai/generations
     participant DB as Postgres
     participant W as dbos worker (ai-generation queue)
@@ -382,116 +405,208 @@ sequenceDiagram
     W-->>UI: stages mirror the publish wizard;\nversion states flip working→published,\nnew working version created
 ```
 
-## 5. Testing & E2E Conventions — provider stubs (current practice)
+## 5. Testing & E2E Conventions — real providers everywhere (current practice)
 
-This section documents how testing actually works today. The governing policy
-is stated in `docs/plan.md` §1 ("Test strategy"): provider egress in e2e is
-deterministic — all outbound provider base URLs are env-overridable and
-pointed at the provider-stub harness — and **"Live-provider smoke tests are
-manual/optional, never part of the gating suite."** Every gating e2e suite in
-every repo runs against stubs, never the real YouVersion/Gloo/OpenRouter/
-GitHub APIs.
+This section documents how testing actually works today. **There are no provider
+stubs left in this project.** The governing policy is design-delta §10 (round 2:
+OpenRouter, Gloo, YouVersion) as extended by **§11** (round 3: GitHub), and it is
+now uniform across all four providers:
+
+> **An e2e test either exercises the real provider or does not exercise that
+> provider at all.** Deterministic provider *misbehavior* — injected failures,
+> controlled timing, error-status handling — is by definition a simulation, so it
+> is a **unit** concern with an injected `fetch`, never an e2e one.
+
+Real-provider e2e **is** the gating suite. The round-1 line plan.md used to carry
+("live-provider smoke tests are manual/optional, never gating") is superseded for
+every provider. The narrow, named exception is **interactive browser logins**
+(YouVersion OAuth sign-in, OpenRouter's PKCE page, GitHub's create-new-repo user
+authorization): a spec may shim *only that hop*, and everything after it is real.
 
 ### 5.1 Layered test strategy (as practiced)
 
-- **Unit**: Vitest in every repo, co-located, network/DB mocked.
+- **Unit**: Vitest in every repo, co-located, network/DB mocked. **Zero real
+  egress** — this is where every stub and injected-fetch mock lives, and it is
+  load-bearing: it is what lets the e2e lanes be fully real without losing
+  failure-path coverage.
 - **db-lib e2e**: real migrations + generated client against Compose Postgres.
 - **api e2e**: real HTTP against a running API + Compose Postgres/MinIO, with
-  provider egress at the stubs.
-- **dbos e2e**: real `DBOSClient` enqueue (workflowID = record id) to
-  completion against the real system DB + app DB + MinIO, including
-  crash/replay tests (kill worker mid-workflow, restart, assert no duplicated
-  side effects — verified via stub call counts).
+  **all** provider egress at the real hosts (OpenRouter, Gloo, YouVersion,
+  github.com / api.github.com).
+- **dbos e2e**: real `DBOSClient` enqueue (workflowID = record id) to completion
+  against the real system DB + app DB + MinIO, including crash/replay tests (kill
+  or cancel the worker mid-workflow, resume, assert no duplicated side effects —
+  verified by DBOS system-DB step-execution counts **plus** real-host artifact
+  reads; see §5.4). The heavy render spec is a separate `test:e2e:render` lane.
 - **nextjs UI e2e**: Stagehand v3 (browser AI testing; its own LLM is Gloo via
-  client-credentials) — mock-mode specs for pure-UI regressions, plus
-  real-stack specs that obtain a real session via the seed seam. Playwright is
-  not used; non-UI e2e never uses a browser.
+  client-credentials), split into **three lanes** with a unit guard asserting
+  every spec belongs to exactly one:
+  - `test:e2e` — **mock lane**: pure-UI regressions, no Docker, no secrets, no
+    network.
+  - `test:e2e:real` — the real-stack specs against the full Compose stack.
+  - `test:e2e:render` — the heavy Remotion render spec, alone and independently
+    re-runnable.
 
-### 5.2 The provider-stub harness (plan task 9)
+  Playwright is not used; non-UI e2e never uses a browser.
 
-`docker-compose.test.yml` (explicit `-f` only; stubs never ship in production
-images) adds five services from one shared zero-dependency image
-(`tests/stubs`, selected by `STUB_KIND`): `github-stub` (:4801, App-JWT
-enforcing), `openrouter-stub` (:4802), `gloo-stub` (:4803), `youversion-stub`
-(:4804), and `git-server` (:4805) — a local git smart-HTTP server so
-clone/push/PR/merge flows run against *real git*. Stubs serve canned +
-stateful responses (PKCE key exchange, async video-job state machine, Bible
-passage fixtures), support `/__admin` seeding routes (e.g. programmable chat
-scripts, contents), and expose `/__stub/health`, `/__stub/reset`, and a
-`/__stub/calls` call-count introspection endpoint that e2e assertions rely on.
+### 5.2 The real-provider harness (what replaced the stubs)
 
-### 5.3 How tests force stubs (the base-URL override pattern)
+`tests/stubs/**` is **deleted** — all five stub kinds (`github-stub`,
+`openrouter-stub`, `gloo-stub`, `youversion-stub`) and the local `git-server`
+smart-HTTP server, plus the shared `STUB_KIND` image and their root self-tests.
+The three AI-provider stubs went in task 34-E8; GitHub's two went in task 62.
 
-The app itself is **real-by-default**: `supagloo-nodejs-api/src/config/env.ts`
-and `supagloo-nodejs-dbos/src/config/env.ts` define every provider base URL
-with the real host as the zod `.default()` — only test code redirects egress:
+`docker-compose.test.yml` **survives**, re-identified as the **test-enablement
+overlay** (still explicit-`-f` only, never auto-merged into a plain
+`docker compose up`). It no longer stubs anything. What it carries, and why:
 
-- `docker-compose.test.yml` overrides the `api` service's
-  `OPENROUTER_BASE_URL` / `GLOO_BASE_URL` / `YOUVERSION_BASE_URL` /
-  `GITHUB_*_BASE_URL` to the in-network stub containers.
-- Both backend repos' `tests/e2e/global-setup.ts` bring the stub containers up
-  as a prerequisite and default every provider var to its localhost stub port
-  (`process.env.X_STUB_URL ?? "http://localhost:480N"`).
-- The e2e specs themselves (`supagloo-nodejs-api/tests/e2e/auth.e2e.ts`,
-  `supagloo-nodejs-dbos/tests/e2e/{generate-*,providers}.e2e.ts`) hardcode the
-  same fallback and pass stub URLs explicitly into client constructors;
-  `providers.e2e.ts` goes further and asserts in `beforeAll` that
-  `env.OPENROUTER_BASE_URL` literally equals the stub URL.
+- `NODE_ENV: development` + `SUPAGLOO_ENABLE_TEST_SEED: "1"` — the two gates the
+  api's `POST /v1/test/seed` route requires, which every nextjs real-stack spec
+  obtains its session through. The base compose pins `NODE_ENV: production` and
+  the Dockerfile bakes it in, so without both lines that route hard-404s.
+- the six `S3_*` values pointing the api at MinIO. `S3_PUBLIC_ENDPOINT:
+  http://localhost:9000` is load-bearing: the render spec's presigned download
+  runs **in the browser**, which cannot resolve the `minio` hostname.
 
-### 5.4 Known couplings and gaps in the stub convention (facts, not proposals)
+No GitHub variable appears in it at all. `docker-compose.yml` already substitutes
+the five real `GITHUB_APP_*` from the untracked root `.env`, and the base URLs
+default to the real hosts.
 
-These are load-bearing properties of today's test suite that any future change
-to provider-testing policy would have to contend with:
+What stands in for the stubs, per provider:
 
-1. **Credential seeding bypasses the real connect flows.** The DBOS workflow
-   e2e tests fabricate provider credentials by calling
-   `prisma.openRouterConnection.create()` directly with
-   `encryptSecret("sk-or-test-key", …)` — the real OpenRouter connect path
-   (browser PKCE; the API stores without server-side verification) and the
-   real Gloo path (verify-then-store, which mints a live token before writing
-   a row) are never exercised in dbos e2e. The flag-gated `POST /v1/test/seed`
-   (api only; requires BOTH `NODE_ENV !== 'production'` AND
-   `SUPAGLOO_ENABLE_TEST_SEED=1`) seeds only Users + session tokens — nothing
-   about provider connections — and no seed route exists in dbos at all.
-2. **Two YouVersion contracts are unverified against the live API.** The Data
-   Exchange client (`supagloo-nodejs-dbos/src/providers/youversion.ts`)
-   carries an explicit ROUTE-SHAPE DISCREPANCY comment: three sources disagree
-   on the real API's paths, none verifiable from the dev environment, so the
-   client is deliberately built to the STUB's routes
-   (`/data-exchange/v1/bibles`, `/data-exchange/v1/passages`) "so the e2e is
-   real and passes", to be reconciled when app licensing is wired. The API's
-   userinfo verifier (`supagloo-nodejs-api/src/auth/youversion.ts`,
-   `GET /auth/v1/userinfo`) is likewise self-described as an invented
-   contract. Real interactive YouVersion OAuth is a browser login flow and is
-   not automatable in the e2e harness — `auth.e2e.ts` tests session/bearer
-   mechanics via the stub plus the seed bypass, never real OAuth.
-3. **The flagship crash/replay test depends on stub-only introspection.**
-   `generateVideoClipWorkflow`'s exactly-once-submit-across-crash/replay e2e
-   (task 34) proves no-re-submission by reading the openrouter-stub's
-   `/__stub/calls` `videoJobsCreated` counter, keyed on the `Idempotency-Key`
-   header. Real OpenRouter has no such introspection endpoint, and there is no
-   confirmation the real video endpoint honors `Idempotency-Key` the way the
-   stub does.
-4. **No CI exists in any of the five repos** (no `.github/workflows`
-   anywhere), so there is no secrets-into-CI story. Live-API key placeholders
-   were added to `.env.example` files (`OPENROUTER_E2E_TEST_API_KEY`,
-   `GLOO_CLIENT_ID`/`GLOO_CLIENT_SECRET`, `YOUVERSION_APP_KEY`) but only
-   `YOUVERSION_APP_KEY` is wired into any code (optional header on the Data
-   Exchange client). Naming caveat: in `supagloo-nextjs`,
-   `GLOO_CLIENT_ID`/`GLOO_CLIENT_SECRET` configure **Stagehand's own LLM**
-   (test-harness AI), an unrelated collision with the app's per-user Gloo
-   connections.
+- **OpenRouter / Gloo / YouVersion**: real credentials from `.env`, seeded through
+  the app's own connect routes (api) or a live-verifying setup helper (dbos).
+- **GitHub**: a shared, zero-dependency ESM harness in **root**, dynamic-imported
+  by api, dbos and nextjs through the established root-resolution seam
+  (`SUPAGLOO_ROOT_DIR` ?? sibling `../supagloo`):
+  - `tests/support/e2e-github-naming.mjs` — the **single authored home** of the
+    throwaway-repo prefix `supagloo-e2e-delete-me-`, plus the per-process run id
+    and the `isE2eRepoName` hard gate. A root unit test greps all four checkouts
+    and fails if the literal appears anywhere else. It is a constant, never an
+    env var: a mistyped prefix in someone's `.env` would make the cleanup gate
+    match a real repo.
+  - `tests/support/e2e-github-api.mjs` — the **single** network harness:
+    installation discovery, fixture-repo creation, the readiness/visibility
+    gates, ref + content seeding, the assertion readers, `Link: rel=next`
+    walking, and `Retry-After` / `x-ratelimit-reset` backoff.
+  - `scripts/cleanup-e2e-repos.mjs` (`npm run cleanup:github-e2e`) — the only
+    lifecycle-ending path for fixture repos (§5.3).
+
+### 5.3 How tests reach real providers (there is no override pattern any more)
+
+The app is **real-by-default**: `supagloo-nodejs-api/src/config/env.ts` and
+`supagloo-nodejs-dbos/src/config/env.ts` define every provider base URL with the
+real host as the zod `.default()`. Today that default is simply *used* — the
+delta was **removing** the test-side overrides, not adding config. Two permanent
+unit guards keep it that way: an inverted overlay test asserting
+`docker-compose.test.yml` defines no stub service and no `GITHUB_*` key, and a
+`providers.e2e.ts` `beforeAll` asserting the AI-provider base URLs carry no stub
+override.
+
+What tests *do* need is **credentials and fixtures**:
+
+- **Secrets** come from the gitignored root `.env`, documented by name only in
+  `.env.example`: `OPENROUTER_E2E_TEST_API_KEY`, `GLOO_CLIENT_ID`/
+  `GLOO_CLIENT_SECRET`, `YOUVERSION_APP_KEY`, optional
+  `YOUVERSION_E2E_ACCESS_TOKEN`, the five `GITHUB_APP_*`, plus
+  `GITHUB_E2E_PAT_TOKEN` and optional `SUPAGLOO_E2E_GITHUB_OWNER`. A missing
+  required var **throws** with a message naming the var and the file — never a
+  `console.warn` + skip, which vitest's default reporter collapses into
+  invisibility. Because vitest runs `globalSetup` in the main process and specs
+  in workers, each backend lane loads root's `.env` into the worker via a
+  `setupFiles` entry (the nextjs **mock** lane deliberately does not — it must
+  stay runnable with no secrets).
+- **GitHub identity is discovered, never hardcoded.** The harness signs a real
+  App JWT (api and dbos pass **db-lib's own `signAppJwt`**, so the product signer
+  is what gets exercised), calls `GET /app/installations`, and resolves the
+  installation and owner login at run time, with five distinct fail-fast throws
+  each naming its remediation. No installation id, owner login or repo name is a
+  literal anywhere.
+- **GitHub fixtures are real, private, per-run throwaway repos.** The PAT creates
+  them (`private: true`, `auto_init: true`, stamped description); the
+  **installation token** does everything else — branch/file seeding and every
+  assertion read — because a PAT is a stronger credential than production ever
+  holds and reading with it could green-light a permission the product lacks.
+  `auto_init` is load-bearing: the scaffold opens its base PR with `base:
+  "main"`, and a commit-less repo has none. Per-run names are mandatory: the
+  scaffold's v0.0.0 commit is byte-deterministic, so a reused repo rejects a
+  second run. Two ordered gates (repo-ready ≤20 s, installation-visibility ≤60 s)
+  run before any enqueue, because the workflow classifies repo absence as
+  *permanent*.
+- **Nothing is torn down in-suite, ever** — not even on success. A red run's repo
+  is usually the only way to debug it, and automated mutation in an account that
+  also holds the user's real repos is unacceptable. Reclamation is a **human**
+  action: `npm run cleanup:github-e2e` prompts per repo, re-checks the prefix gate
+  *at the mutation site*, and **archives — never deletes**. It has `--dry-run`
+  and deliberately no `--yes-to-all`.
+
+### 5.4 Known couplings and gaps in the current convention (facts, not proposals)
+
+These are load-bearing properties of today's test suite:
+
+1. **Exactly-once is proven along two axes, and one of them is provider-side.**
+   Crash/replay specs assert (a) the DBOS system-DB step-execution count for the
+   target step — one `StepInfo` row per `functionID`, so neither an internal
+   retry nor a replayed resume inflates it — and (b) a real-host artifact read.
+   For **GitHub** both axes exist: exactly one merged PR (queried `state: "all"`
+   — a merged PR is `closed`, so `state=open` would be a green lie), exactly one
+   `refs/tags/v<semver>`, an unchanged commit count across a resume. For
+   **OpenRouter** only (a) plus `providerJobId` stability exists: the provider
+   offers no introspection, so the sub-second submit-vs-checkpoint window is not
+   empirically observed (design-delta §10.5's accepted risk). `importProject` has
+   only axis (a) by nature — it is read-only, so there is no artifact to count.
+2. **Real GitHub leaves durable third-party side effects.** Every full sweep
+   creates ~15-20 private `supagloo-e2e-delete-me-*` repos in a **personal
+   account that also holds the project's real repos**, reclaimed only by a human
+   running the interactive cleanup script. Mitigated only by the unmistakable
+   prefix, private visibility, the stamped description, archive-never-delete, and
+   the hard gate re-checked at the mutation site. Tracked as plan row 67.
+3. **git-ops e2e is no longer hermetic or offline.** §4's `docker compose up`
+   promise no longer covers it: clone/push/PR/merge need github.com. Reintroducing
+   a stub, marking the lane optional, and adding a "fast mode" are all explicitly
+   **not** acceptable mitigations (design-delta §10.9 / §11.9). Suite runtime is
+   bound by real latency — the wizard's readiness wait is 240 s against wireframe
+   12a's designed ~20 s local ideal — and the gating suite can go red for reasons
+   no code change caused: provider outages, rate limits, GitHub incidents.
+4. **The create-new-repo path is uncovered end to end, and is a real product
+   defect.** `createUserRepo` sends no `auto_init`, so the repo it creates has no
+   `main` and the scaffold's `base: "main"` PR 422s against real GitHub — masked
+   for a year by the stub claiming `default_branch: "main"` while a *separate*
+   git-server fixture seeded an actual `main`. The api-level spec keeps the server
+   half real by injecting a `fetchImpl` that intercepts **only** the OAuth token
+   exchange; the mock lane keeps the client half; the browser round trip in
+   between is uncovered because the one container-level seam
+   (`GITHUB_OAUTH_BASE_URL`) is simultaneously the browser's redirect target.
+   Tracked as plan rows **63** (the defect) and **66** (the split that would
+   restore the browser coverage).
+5. **Two YouVersion contracts remain imperfectly verified.** The Data Exchange
+   client's routes were corrected against the live API (task 34-E5), but the
+   sign-in verifier is still built to an invented `GET /auth/v1/userinfo`
+   contract; the real API is JWT-claims-based with a JWKS endpoint (plan row 56
+   item 1). `auth.e2e.ts` tests session/bearer mechanics with **zero** YouVersion
+   egress; the live round trip is an env-gated spec that skips when its token is
+   unset.
+6. **Repo emptiness is derived from `size === 0`**, which GitHub reports in KB
+   and computes asynchronously. Correct for fixtures the harness just created (a
+   live probe confirmed small real repos report `size: 0`), but the wizard's "use
+   existing empty repo" tab makes it load-bearing in production. Tracked as plan
+   row 65.
+7. **No CI exists in any of the five repos** (no `.github/workflows` anywhere),
+   so there is no secrets-into-CI story and nothing is gated automatically —
+   every suite is run by a human. Design-delta §9-Q12. Naming caveat that still
+   holds: in `supagloo-nextjs`, `GLOO_CLIENT_ID`/`GLOO_CLIENT_SECRET` configure
+   **Stagehand's own LLM**, and the app-under-test's Gloo credentials use
+   distinct names.
+8. **The nextjs mock lane is flaky** — one spec fails roughly half of runs, in
+   two unrelated ways (a CDP layout error, and a 6 s wait the mock commit path
+   misses about a third of the time). Pre-existing, unrelated to provider work,
+   and tracked as plan row 68. Until it lands, a single green mock-lane run is
+   weak evidence.
 
 ## 6. Gaps / Not Yet Implemented
 
-Per `docs/plan.md` (tasks 35–54 not done):
+Per `docs/plan.md` (tasks 39–56 and 59–61 / 63–68 not done):
 
-- **Studio AI wiring (35).** The `/v1/ai/generations` endpoints and all four
-  workflows are real, but the studio's generation controls ("→ AI" script,
-  reroll visual, narrator voice, music bed) do not call them yet.
-- **Render pipeline (36–38).** No `renderWorkflow`, no `@remotion/renderer`
-  usage, no render API endpoints; the UI render overlay is still the fake
-  frame-ticker. `RenderJob` exists only as a schema row.
 - **Gallery (39–41).** No gallery endpoints, upvotes, or UI; `GalleryItem` /
   `GalleryUpvote` exist only as schema rows.
 - **Cleanup workflow (42).** No scheduled orphaned-asset / expired-session
@@ -501,15 +616,26 @@ Per `docs/plan.md` (tasks 35–54 not done):
   not run; **api/dbos are not deployed** (Railway serves only the Next.js
   app; task 46 is the prod wiring); the full golden-path acceptance run
   doesn't exist.
-- **Code-review-surfaced follow-ups (48–54)**, deliberately deferred:
+- **Code-review-surfaced follow-ups (48–61)**, deliberately deferred:
   installation-token plaintext in DBOS step checkpoints (48); repo-creation
   TOCTOU race — no DB constraint backs the one-repo-one-project check (49);
   git-ops merge-sha fallback + ProjectJob/DBOS status reconciliation (50);
   GitHub install-callback CSRF/state-nonce (51); connect-flow UX/e2e polish
   (52); wizard robustness — untested inline state machines, no repo-creation
   compensation, client-guessed studio slug (53); publish sends a static
-  hardcoded string as the real PR body (54).
-- **Live-provider verification.** By policy (§5), nothing in the gating
-  suites talks to the real YouVersion/Gloo/OpenRouter APIs; the two invented
-  YouVersion contracts and the video `Idempotency-Key` assumption remain
-  unverified against the live services.
+  hardcoded string as the real PR body (54); YouVersion production-readiness
+  (55) and the JWT-claims sign-in contract (56); render failure-card copy
+  fidelity (59); render driver lifecycle — cancel during the start window (60);
+  a zero-egress heavy-lane render fixture with real duration (61).
+- **Real-GitHub follow-ups (63–68)**, surfaced by task 62 and deliberately not
+  absorbed into it: **create-new-repo yields an unborn `main`, so the product's
+  headline designed path cannot scaffold against real GitHub (63 — a real
+  product defect, the highest-severity of the block)**; `403 + Retry-After` /
+  `429` handling in the GitHub clients (64); the `empty = size === 0`
+  derivation (65); the OAuth public/internal base-URL split that would restore
+  browser-level create-new-repo coverage (66); the accumulating-fixture-repo
+  cost (67, an accepted operational cost); and the flaky nextjs mock lane (68).
+- **Live-provider verification.** The remaining gaps are narrow and named: the
+  invented YouVersion sign-in contract (plan row 56 item 1) and the video
+  `Idempotency-Key` assumption (design-delta §10.5's accepted risk). Everything
+  else in the gating suites now runs against the live services (§5).
