@@ -6,9 +6,15 @@ metadata:
 ---
 
 Built 2026-07-26 in `/Users/ash/code/supagloo-nodejs-api` (branch `v0.0.38`). Seven routes,
-five new modules under `src/gallery/`, one route file, four modified files. Green: typecheck 0,
-unit 49 files / 603 tests, `tests/e2e/gallery.e2e.ts` 25/25 against real Postgres + real MinIO
-with **zero provider credentials**.
+five new modules under `src/gallery/`, one route file, four modified files.
+
+**HARDENED the same day** by an adversarial audit's nine findings (all closed in one pass):
+typecheck 0, unit 50 files / **620** tests, `tests/e2e/gallery.e2e.ts` **28/28** against real
+Postgres + real MinIO with **zero provider credentials**. The audit confirmed no SQL injection was
+reachable and every ownership/visibility/IDOR mutation was caught — and found ten unauthenticated
+500s behind bound parameters. Read [[bound-is-not-safe-postgres-value-gates]] and
+[[tests-that-hold-invariants-vs-shapes]] BEFORE touching this surface; the gotchas below are
+amended by them.
 
 ## Four firsts, each with a decision attached
 
@@ -43,10 +49,17 @@ for a number nothing renders).
 
 ## Gotchas worth the ink
 
-- **A forged cursor must be validated PER SORT, or it is a 500 not a 400.** The keyset key is
+- **A forged cursor must be validated PER SORT, or it is a 500 not a 400** — and the TYPE check is
+  only half of it. **CORRECTED 2026-07-26:** the original `!Number.isNaN(Date.parse(k))` guard was a
+  proxy for Postgres's parser, not a test of it, and five hostile timestamps plus an unsafe ordinal
+  plus a NUL in `q` were live unauthenticated 500s. The gate is now a strict ISO-8601 GRAMMAR
+  (`isStrictIsoInstant`), `Number.isSafeInteger` + an ordinal ceiling for `n`, and a
+  `parseSearchTerm` codec for `q`. Full account: [[bound-is-not-safe-postgres-value-gates]].
+  The keyset key is
   bound with the cast its sort needs (`::integer` / `::timestamptz` / `::double precision`), so a
   `newest` cursor carrying `42` reaches `'42'::timestamptz` — a Postgres error. The codec
-  therefore type-checks `k` against `s` (finite number / int4 range / parseable timestamp) rather
+  therefore type-checks `k` against `s` (finite number / int4 range / STRICT timestamp grammar)
+  rather
   than accepting any `number | string`. Measured aside: the casts themselves are NOT load-bearing
   today — Prisma leaves these parameters' types unspecified and Postgres infers from the column,
   proven by deleting the cast and re-running the real-Postgres walk. They stay as intent.
@@ -64,14 +77,26 @@ for a number nothing renders).
 - **`rank` is server-side, popular-only, and continuous across pages** (the cursor's `n` supplies
   the starting ordinal). A client computing `index + 1` would badge the 25th item "#1"; the
   `rank <= 3` threshold and trophy-at-1 rule are presentation and live in the UI.
+  **AMENDED 2026-07-26:** the listing is TWO queries, so `rank` is derived from the position the
+  RAW query gave each id, never from the surviving rows of the typed re-read. A row deleted between
+  them then leaves a truthful rank GAP (1, 3) instead of renumbering the survivors, and
+  `nextCursor.n` stays in the same coordinate system. A SHORT page with a non-null `nextCursor` is
+  therefore correct and expected; `nextCursor === null` is still the only exhaustion signal.
 - **`escapeLike` is not decoration.** Without it a `q` of `%` matches everything and `_` matches
-  any character. Blank/whitespace `q` emits NO predicate at all, never `%%`.
+  any character. Blank/whitespace `q` emits NO predicate at all, never `%%`. It is NOT a
+  sanitiser: control characters and the length bound are `parseSearchTerm`'s job (400
+  `invalid_query`, a distinct slug from `invalid_cursor`).
 - **The upvote transaction never raises.** `createMany({ skipDuplicates })` →
   `INSERT … ON CONFLICT DO NOTHING`, `deleteMany` for the unvote, `{ increment: 1 }` /
-  `{ decrement: 1 }` with a `upvoteCount: { gt: 0 }` floor guard. A P2002 caught INSIDE a Postgres
-  transaction does not save you (25P02, and Prisma issues no SAVEPOINT), and a read-then-write
-  loses updates under READ COMMITTED. Proven end-to-end: 8 concurrent distinct voters ⇒ exactly 8;
-  8 parallel same-user votes ⇒ 1 row, no 5xx.
+  `{ decrement: 1 }` with a `upvoteCount: { gt: 0 }` floor guard. A read-then-write loses updates
+  under READ COMMITTED. Proven end-to-end: 8 concurrent distinct voters ⇒ exactly 8; 8 parallel
+  same-user votes ⇒ 1 row, no 5xx.
+  **CORRECTED 2026-07-26 — do not repeat the overstatement:** it is NOT true that every
+  `try { create } catch (P2002) {}` shape is broken here. What is broken is swallowing the conflict
+  and then running ANY further statement in the aborted transaction (25P02; Prisma issues no
+  SAVEPOINT). `createMany` is preferred because it makes that state structurally unreachable and is
+  one round trip, not because the alternatives fail. See
+  [[tests-that-hold-invariants-vs-shapes]] §2.
 - **`isUniqueViolation` duck-types `code === "P2002"`**, not `instanceof
   PrismaClientKnownRequestError`, so the narrow guard stays assertable without constructing a real
   Prisma error.
