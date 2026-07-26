@@ -54,6 +54,14 @@ import { E2E_RUN_ID } from "./e2e-github-naming.mjs";
  *   - {@link clearGalleryFixtures} is exported for the spec's `afterAll`,
  *   - and both only ever touch rows whose **id passes {@link isGalleryFixtureId}**.
  *
+ * That last line is EXECUTABLE, not a promise. No DELETE here carries a `LIKE` predicate:
+ * {@link deleteFixtureRows} READS the LIKE-bounded candidates, runs every id it got through
+ * {@link isGalleryFixtureId}, and deletes an explicit `id = ANY($1::text[])` list. A pattern
+ * is a weaker gate than the function — `LIKE 'e2e-gallery-%'` also matches
+ * `e2e-gallery-Mixed` and the bare prefix, neither of which this helper can mint — so the
+ * function is what decides. `tests/unit/gallery-e2e-seed.test.ts` drives the whole teardown
+ * over an in-memory client and asserts exactly that.
+ *
  * That id gate is the same shape as the repo-name gate in `e2e-github-naming.mjs`: a
  * reviewed constant, re-checked AT THE MUTATION SITE, never env-derived. Nothing this
  * helper did not create can be deleted by it, so a developer's own local gallery items are
@@ -90,8 +98,18 @@ const FIXTURE_ID_CHARS = /^[a-z0-9-]+$/;
 /**
  * THE HARD GATE. Exact-prefix, case-sensitive, non-empty suffix, and a closed alphabet.
  *
- * Re-checked immediately before every DELETE and every S3 removal, so the prefix is a code
- * invariant at the mutation site rather than a filtering side effect.
+ * EVERY id crosses this function before it can be mutated or removed:
+ *
+ *   - {@link fixtureId} self-checks what it mints (so the gate can never be narrower than
+ *     the ids in play),
+ *   - {@link deleteFixtureRows} filters the LIKE-bounded candidate ids through it and then
+ *     deletes that explicit list — the row DELETEs take no `LIKE` predicate at all,
+ *   - {@link listFixtureRenderJobIds} and {@link deleteFixtureMedia} filter through it
+ *     before an id becomes an S3 key.
+ *
+ * So the prefix is a code invariant at the mutation site, not a filtering side effect: a
+ * row that matched the pattern but not this function (`e2e-gallery-Mixed`, the bare prefix)
+ * is left alone, because this helper could not have written it.
  */
 export function isGalleryFixtureId(id) {
   if (typeof id !== "string") return false;
@@ -101,12 +119,15 @@ export function isGalleryFixtureId(id) {
 }
 
 /**
- * The `LIKE` pattern the DELETEs use, as a BOUND parameter.
+ * The `LIKE` pattern the candidate SELECTs use, as a BOUND parameter.
+ *
+ * This narrows the READ in SQL — it is the first of two gates, never the only one. The
+ * DELETEs themselves take an explicit id list that {@link isGalleryFixtureId} produced.
  *
  * `%` and `_` are wildcards inside `LIKE`, so a prefix containing either would silently
- * widen the gate — the same class of bug the API's `escapeLike` exists for. The prefix is a
- * reviewed constant today; this asserts it, because the cost of being wrong is deleting
- * somebody's rows.
+ * widen the read — the same class of bug the API's `escapeLike` exists for. The prefix is a
+ * reviewed constant today; this asserts it, because the cost of being wrong is reading (and
+ * then, if the second gate ever regressed, deleting) somebody's rows.
  */
 function fixtureLikePattern(prefix = GALLERY_FIXTURE_ID_PREFIX) {
   if (/[%_\\]/.test(prefix)) {
@@ -120,8 +141,14 @@ function fixtureLikePattern(prefix = GALLERY_FIXTURE_ID_PREFIX) {
 
 /* --------------------------------------------------------------------------- primitives */
 
-/** `<prefix><runId>-<kind>-<suffix…>`, always inside the gate's alphabet. */
-function fixtureId(runId, kind, ...parts) {
+/**
+ * `<prefix><runId>-<kind>-<suffix…>`, always inside the gate's alphabet.
+ *
+ * Exported for `tests/unit/gallery-e2e-seed.test.ts` only — the self-check below is
+ * unreachable through the public API (every caller passes a non-empty literal `kind`), and
+ * an assertion nothing can drive is an assertion nobody knows still works.
+ */
+export function fixtureId(runId, kind, ...parts) {
   const segments = [runId, kind, ...parts.map(String)]
     .map((s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""))
     .filter(Boolean);
@@ -142,6 +169,14 @@ function fixtureId(runId, kind, ...parts) {
  * raw value is arbitrary — but deriving it from the runId rather than randomising makes the
  * whole seed replayable: re-seeding the same run hands the spec back the SAME token instead
  * of orphaning the one it already put in a cookie.
+ *
+ * NOT DEAD CODE — this has been misread as one already. `deriveToken`,
+ * {@link hashSessionToken} and {@link insertSession} are the session path nextjs's
+ * `tests/e2e/gallery.e2e.ts` "Your videos" block (E-GU12 / E-GU12b) RUNS ON: it plants
+ * `fixtures.users[0].sessionToken` as the real `SESSION_COOKIE_NAME` cookie
+ * (`gallery.e2e.ts:626-645`) because the fixture renders belong to the eight seeded
+ * AUTHORS, not to the `?seed=` viewer — so there is no other way to sign in as an owner.
+ * Deleting any of the three breaks three tests.
  */
 function deriveToken(runId, label) {
   return createHash("sha256")
@@ -896,11 +931,12 @@ async function bulkInsert(client, table, columns, rows, updateClause) {
  * Delete every fixture row this helper can have written, and (unless `media: false`) their
  * MinIO objects.
  *
- * Gate: each statement matches on `id LIKE '<prefix>%'` — nothing else. Deleting the users
- * alone would cascade most of this, but each table is named explicitly so the teardown does
- * not silently depend on a cascade someone later changes, and so `GalleryUpvote` rows the
- * PRODUCT created during the run (real pill clicks, cuid ids) are removed by their
- * `galleryItemId` rather than by luck.
+ * Gate: each table's candidates are read with `id LIKE '<prefix>%'` and then filtered
+ * through {@link isGalleryFixtureId}; the DELETE takes that explicit id list and no pattern.
+ * Deleting the users alone would cascade most of this, but each table is named explicitly so
+ * the teardown does not silently depend on a cascade someone later changes, and so
+ * `GalleryUpvote` rows the PRODUCT created during the run (real pill clicks, cuid ids) are
+ * removed by their `galleryItemId` rather than by luck.
  *
  * Deliberately does NOT delete a viewer user it did not create: a pre-existing viewer keeps
  * a non-fixture id and therefore never matches.
@@ -926,16 +962,59 @@ export async function clearGalleryFixtures(options = {}) {
 }
 
 async function listFixtureRenderJobIds(client) {
+  // The gate again, at the point of use: only ids it accepts become S3 delete keys.
+  return selectGatedIds(client, "RenderJob");
+}
+
+/**
+ * The seven tables teardown touches, CHILDREN FIRST so no FK is ever left dangling.
+ *
+ * `GalleryUpvote` is absent because it is the one table with a different gate rule (see
+ * {@link deleteFixtureRows}). The identifiers here are literals from this reviewed array
+ * and never come from input, which is why interpolating them into SQL is safe — the ids,
+ * which DO come from the database, always cross as bound parameters.
+ */
+const FIXTURE_TABLES = Object.freeze([
+  Object.freeze({ label: "galleryItems", table: "GalleryItem" }),
+  Object.freeze({ label: "renderJobs", table: "RenderJob" }),
+  Object.freeze({ label: "projectVersions", table: "ProjectVersion" }),
+  Object.freeze({ label: "projects", table: "Project" }),
+  Object.freeze({ label: "sessions", table: "Session" }),
+  Object.freeze({ label: "users", table: "User" }),
+]);
+
+/**
+ * Read the ids a DELETE is allowed to touch: `LIKE`-bounded in SQL, then every row's id run
+ * through {@link isGalleryFixtureId} before it can become a delete key.
+ */
+async function selectGatedIds(client, table) {
   const { rows } = await client.query(
-    'SELECT "id" FROM "RenderJob" WHERE "id" LIKE $1',
+    `SELECT "id" FROM "${table}" WHERE "id" LIKE $1`,
     [fixtureLikePattern()],
   );
-  // The gate again, at the point of use: only ids it accepts become S3 delete keys.
   return rows.map((r) => r.id).filter(isGalleryFixtureId);
+}
+
+/** DELETE an explicit id list. No list, no statement. Returns the rows actually removed. */
+async function deleteByIds(client, table, ids) {
+  if (ids.length === 0) return 0;
+  const res = await client.query(
+    `DELETE FROM "${table}" WHERE "id" = ANY($1::text[])`,
+    [ids],
+  );
+  return res.rowCount ?? 0;
 }
 
 /**
  * The DELETEs themselves. Assumes the caller opened a transaction.
+ *
+ * SELECT-THEN-DELETE, NOT `DELETE … WHERE id LIKE`. The pattern narrows the read; the gate
+ * function decides. That is the difference between "bounded by a string this file happens
+ * to control" and "every deleted id was checked by the reviewed predicate" — and it is what
+ * makes this module's opening JSDoc literally true rather than aspirational. The cost is
+ * seven extra SELECTs against a local Compose database, and one race window (a row inserted
+ * between the SELECT and the DELETE survives) that cannot occur here: both statements run
+ * inside one transaction, and concurrent gallery specs are already forbidden — see below.
  *
  * The gate is PREFIX-WIDE, not run-scoped, and that is the point: leftovers from EARLIER
  * runs are exactly what has to go, because they share the one global public listing. The
@@ -943,24 +1022,25 @@ async function listFixtureRenderJobIds(client) {
  * would clear each other. Nothing does today (the real lane runs one file at a time).
  */
 async function deleteFixtureRows(client) {
-  const like = fixtureLikePattern();
   const counts = {};
-  const run = async (label, sql, params) => {
-    const res = await client.query(sql, params);
-    counts[label] = res.rowCount ?? 0;
-  };
 
-  await run(
-    "galleryUpvotes",
-    'DELETE FROM "GalleryUpvote" WHERE "id" LIKE $1 OR "galleryItemId" LIKE $1',
-    [like],
+  // GalleryUpvote first, and by a DIFFERENT rule. A vote the PRODUCT cast during the run
+  // (a real pill click) has a cuid id of its own, so it can only be recognised through its
+  // `galleryItemId` — the gate is applied to THAT column instead. The row is still only
+  // reachable via an id this helper minted, so the invariant holds; it just holds one hop
+  // away. Deleted by primary key either way.
+  const { rows: upvoteRows } = await client.query(
+    'SELECT "id", "galleryItemId" FROM "GalleryUpvote" WHERE "id" LIKE $1 OR "galleryItemId" LIKE $1',
+    [fixtureLikePattern()],
   );
-  await run("galleryItems", 'DELETE FROM "GalleryItem" WHERE "id" LIKE $1', [like]);
-  await run("renderJobs", 'DELETE FROM "RenderJob" WHERE "id" LIKE $1', [like]);
-  await run("projectVersions", 'DELETE FROM "ProjectVersion" WHERE "id" LIKE $1', [like]);
-  await run("projects", 'DELETE FROM "Project" WHERE "id" LIKE $1', [like]);
-  await run("sessions", 'DELETE FROM "Session" WHERE "id" LIKE $1', [like]);
-  await run("users", 'DELETE FROM "User" WHERE "id" LIKE $1', [like]);
+  const upvoteIds = upvoteRows
+    .filter((r) => isGalleryFixtureId(r.id) || isGalleryFixtureId(r.galleryItemId))
+    .map((r) => r.id);
+  counts.galleryUpvotes = await deleteByIds(client, "GalleryUpvote", upvoteIds);
+
+  for (const { label, table } of FIXTURE_TABLES) {
+    counts[label] = await deleteByIds(client, table, await selectGatedIds(client, table));
+  }
   return counts;
 }
 

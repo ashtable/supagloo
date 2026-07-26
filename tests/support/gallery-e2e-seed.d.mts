@@ -245,8 +245,23 @@ export const GALLERY_FIXTURE_ID_PREFIX: string;
 export const GALLERY_PAGE_SIZE: number;
 
 /** THE HARD GATE: exact prefix, non-empty suffix, closed `[a-z0-9-]` alphabet. Re-checked
- *  at every mutation site. */
+ *  at every mutation site — the row DELETEs filter their LIKE-bounded candidate ids through
+ *  this and then delete that explicit list, so no DELETE carries a `LIKE` predicate. */
 export function isGalleryFixtureId(id: unknown): boolean;
+
+/**
+ * `<prefix><runId>-<kind>-<parts…>`, sanitised into the gate's alphabet and self-checked
+ * against {@link isGalleryFixtureId} (THROWS rather than return an id the gate rejects).
+ *
+ * Exported for root's own `tests/unit/gallery-e2e-seed.test.ts`, which drives that
+ * self-check. Consumers get their ids from {@link buildGalleryFixturePlan} and have no
+ * reason to call this.
+ */
+export function fixtureId(
+  runId: string,
+  kind: string,
+  ...parts: (string | number)[]
+): string;
 
 /** SHA-256 hex of a raw token — byte-for-byte the API's `hashToken`, i.e. `Session.tokenHash`. */
 export function hashSessionToken(raw: string): string;
