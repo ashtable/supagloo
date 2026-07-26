@@ -1,6 +1,6 @@
 ---
 name: e2e-test-infra-conventions
-description: Plan-level e2e conventions (2026-07-17, docs/plan.md; provider-stub posture superseded 2026-07-22 for OpenRouter/Gloo/YouVersion by design-delta §10) — real-provider gating e2e for those three, GitHub still stubbed; flag-gated /v1/test/seed built early; Stagehand real-stack mode via seed; DBOS crash/replay tests standard
+description: Plan-level e2e conventions (docs/plan.md) — real-provider gating e2e for ALL FOUR providers incl. GitHub (stubs fully deleted 2026-07-25, design-delta §11); flag-gated /v1/test/seed built early; Stagehand real-stack mode via seed, three nextjs lanes; DBOS crash/replay proven by system-DB step counts + real-host artifact reads
 metadata:
   type: convention
 ---
@@ -8,19 +8,26 @@ metadata:
 Established 2026-07-17 in `docs/plan.md` (Step 5 of `/design`), pending user
 approval of that plan:
 
-- **Provider-stub harness** (plan task 9): all outbound provider base URLs
-  (GitHub API, OpenRouter, Gloo, YouVersion) are env-overridable; e2e points
-  them at stub HTTP servers with call-count assertions, plus a **local git
-  smart-HTTP server** so clone/push/PR-merge flows in git-ops workflows run
-  against real git. Stubs never ship in production images.
-  **SUPERSEDED 2026-07-22 for OpenRouter/Gloo/YouVersion** (design-delta §10,
-  signed off; plan tasks 34-E1–34-E8): e2e for those three always hits the
-  **real provider APIs** and *is* the gating suite — the three stubs get
-  deleted; failure injection (503/repair/timing) moves to injected-fetch
-  unit tests; real secrets from `.env` fail e2e setup fast when missing.
-  **GitHub stays stubbed** (github-stub + git-server untouched, out of scope).
-  Sole exception: interactive browser logins (YouVersion OAuth, OpenRouter
-  PKCE page) — UI specs may shim only that hop.
+- **THERE ARE NO STUBS. e2e is real for all four providers.** (Current as of
+  2026-07-25.) Every outbound base URL still defaults to the real host in both
+  backend env loaders, and **nothing overrides them** — real-by-default is
+  achieved by not overriding. `tests/stubs/**` is DELETED in full.
+  History, so the older notes read correctly: task 9 built five stub HTTP
+  servers + a local git smart-HTTP server with `/__stub/calls` call-count
+  assertions; task 34-E8 (design-delta §10) deleted the
+  openrouter/gloo/youversion three; **task 62 (design-delta §11) deleted the
+  last two — `github-stub` and `git-server` — plus the whole directory.**
+  Failure injection (503/repair/timing, and now 401/404/422/405/409/429) lives
+  in injected-fetch **unit** tests; required real secrets come from the root
+  `.env` and **throw** in e2e setup when missing (never warn-and-skip — vitest's
+  default reporter hides skipped-file console output; row 56 item 2).
+  Sole exception: interactive browser logins — a spec may shim only that hop
+  (YouVersion OAuth, OpenRouter's PKCE page, and GitHub's create-new-repo token
+  exchange, where the shim is one injected `fetchImpl` that throws on any URL
+  other than `POST /login/oauth/access_token`).
+  **Do not re-add a stub, a `/__stub/*` call, or a `GITHUB_*_BASE_URL` override.**
+  Permanent unit guards fail you, and §10.7/§10.9/§11.7 forbid it by policy.
+  Today's GitHub harness: [[real-github-e2e-harness]].
 - **`POST /v1/test/seed`** (flag-gated, `NODE_ENV !== 'production'`, per
   design-delta §9-Q9) is built *early* (M2, with auth) because nearly all
   later e2e depends on deterministic users/sessions — deliberately not left
@@ -32,13 +39,36 @@ approval of that plan:
   specs are kept for pure-UI regressions. Stagehand is the UI e2e tool;
   non-UI e2e never uses a browser.
 - **DBOS crash/replay tests are standard** for workflows where the design
-  emphasizes recovery: kill the worker mid-workflow, restart, assert
-  completed steps don't re-execute and side effects aren't duplicated
-  (flagship case: `generateVideoClipWorkflow` — stub submit count stays 1
-  across a crash between submit and poll-completion).
-- **Slow render e2e** (real `@remotion/renderer`) runs in a tagged heavy
+  emphasizes recovery: kill/cancel the worker mid-workflow, resume, assert
+  completed steps don't re-execute and side effects aren't duplicated.
+  **The proof is TWO axes now, never a stub counter** (design-delta §10.5/§11.5):
+  (1) **durability** = `countStepExecutions` over the DBOS system DB — one
+  `StepInfo` row per `functionID`, so neither an internal retry nor a replayed
+  resume inflates it; (2) **non-duplication** = a real-host artifact read.
+  GitHub has both axes (exactly one merged PR, one `refs/tags/v<semver>`, an
+  unchanged commit count); OpenRouter has only (1) plus `providerJobId`
+  stability, because it offers no introspection (§10.5 accepted risk);
+  `importProject` has only (1) because it is read-only.
+  **Reading rule, and it is a bug class:** artifact reads ALWAYS pass
+  `state: "all"`. A merged PR is `closed`, so `state=open` reports zero PRs for
+  a successfully scaffolded repo — a green lie. The same mistake existed in the
+  product (`findOpenPrByHead`) and was fixed in task 62.
+- **Slow render e2e** (real `@remotion/renderer`) runs in a separate heavy
   lane, not on every push; the never-merge-red rule still applies to the lane.
-- **Stub coupling runs deeper than base URLs** (verified 2026-07-22 against
+  Both dbos (`test:e2e:render`) and nextjs (`test:e2e:render`) have one.
+- **nextjs has THREE e2e lanes** (task 62): `test:e2e` (mock — Docker-free, no
+  secrets, no network, and the ONLY lane that must not load root's `.env`),
+  `test:e2e:real`, `test:e2e:render`. `tests/unit/e2e-lane-coverage.test.ts`
+  asserts every `tests/e2e/*.e2e.ts` belongs to exactly one lane — a spec in no
+  lane never reports, which is a green-lie generator. NOTE the mock lane is
+  currently **flaky** (`studio-project.e2e.ts`, ~50%, plan row 68): a single
+  green run there is weak evidence.
+- **Root `.env` must reach the WORKERS, not just globalSetup.** vitest runs
+  `globalSetup` in the main process and specs in worker processes, so env set in
+  globalSetup does not reach a spec. Each real lane has a `setupFiles` entry
+  that calls `process.loadEnvFile` on root's `.env` (it does not override an
+  already-set var, so an explicit `FOO=… npm run test:e2e` still wins).
+- **HISTORICAL (all resolved; kept because 34-E*/62's rows reference it) — stub coupling ran deeper than base URLs** (verified 2026-07-22 against
   the code; **docs closed the gap 2026-07-23** — design-delta §10.7 now names
   this "third coupling category" and plan 34-E3/E4/E8 carry the sub-steps):
   the e2e **bodies** depend on stub-only constructs that do NOT exist on real
@@ -70,6 +100,6 @@ approval of that plan:
   dbos e2e currently exercises `provider: "gloo"` (only `providers.e2e.ts`
   covers real Gloo `.chat()` — the reason it survives).
 
-Open sign-off item recorded in plan §6: whether `mintInstallationToken`
-lives in `database-lib` (shared, recommended) or is duplicated per service
-(as the design text reads). See [[github-app-installation-tokens]].
+Resolved sign-off item from plan §6: `mintInstallationToken` lives in
+`database-lib` (shared), not duplicated per service. See
+[[github-app-installation-tokens]] and [[github-app-pem-normalization]].

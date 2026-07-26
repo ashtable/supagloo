@@ -5,7 +5,15 @@ metadata:
   type: decision
 ---
 
-Task 34-E8 (design-delta §10.7/§10.8) done 2026-07-23. The LAST stub-teardown task: with
+> **FOLLOW-UP 2026-07-25 (task 62, design-delta §11.7): 34-E8 was NOT the last
+> stub-teardown task.** Task 62 deleted `github-stub` + `git-server` too, and with them
+> the ENTIRE `tests/stubs/**` tree, the shared `STUB_KIND` image, and the five root
+> self-tests. `docker-compose.test.yml` survives with **zero** stub services and **zero**
+> `GITHUB_*` keys, re-identified as the test-enablement overlay. `compose-test-overlay.test.ts`
+> was inverted again to assert exactly that. Where this note says "github-stub + git-server
+> untouched", read "…until task 62". Today's harness: [[real-github-e2e-harness]].
+
+Task 34-E8 (design-delta §10.7/§10.8) done 2026-07-23. The last stub-teardown task OF ROUND 2: with
 34-E1..E7 having migrated every real-provider path, the openrouter/gloo/youversion stubs were
 dead infra, so this task DELETED them across all three repos. `github-stub` + `git-server`
 untouched — the shared `STUB_KIND` image now serves **2 kinds instead of 5** (verified: rebuilt

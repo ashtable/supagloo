@@ -1,6 +1,6 @@
 ---
 name: github-app-installation-tokens
-description: Confirmed 2026-07-17 — GitHub App (not OAuth app); store only installationId, mint short-lived installation tokens on demand
+description: GitHub App (not OAuth app); store only installationId, mint short-lived installation tokens on demand; the JIT zero-storage create-new-repo hop — and the two real-GitHub findings task 62 made about it (missing auto_init = plan row 63; 200-with-error exchange)
 metadata:
   type: decision
 ---
@@ -37,3 +37,23 @@ zero storage, preserving the no-repo-credential-at-rest principle.
 first git step is therefore `ensureRepoAccessible` (idempotent reachability
 check), **not** `createGithubRepo`. **Refresh-token storage was considered and
 rejected** (reintroduces a per-user credential at rest for a one-time op).
+
+**VERIFIED AGAINST REAL GITHUB 2026-07-25 (task 62), with two findings:**
+
+1. **`createUserRepo` sends no `auto_init`**, so the repo it creates has zero
+   commits and no `main` ref — and `scaffoldProjectWorkflow` then opens its base
+   PR with `base: "main"`, which real GitHub **422s**. The designed create-new
+   path therefore does not work end to end today. The task-9 stub hid this
+   completely by claiming `default_branch: "main"` in its create response while a
+   SEPARATE git-server fixture independently seeded a real `main` — two fake
+   backends sharing no storage. **Plan row 63**; a correct fix is a design
+   decision (it touches `ProjectVersion`'s PR-number nullability), not a patch.
+2. **The exchange's failure mode is not what the code assumed**: real GitHub
+   returns HTTP **200** with `{"error":"bad_verification_code"}`, so an `res.ok`
+   check treats a failure as success. Fixed in task 62 with a typed
+   `GithubUserAuthExchangeError`.
+
+Also live-verified: the installation grants `contents:write` +
+`pull_requests:write` + `metadata:read` and **no `administration`** — which is
+why the e2e harness creates fixture repos with a PAT and does everything else
+with the installation token ([[real-github-e2e-harness]]).

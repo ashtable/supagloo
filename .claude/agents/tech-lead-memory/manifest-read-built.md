@@ -57,7 +57,23 @@ response schema pins `type:"file"` + `encoding:"base64"` (manifest is tiny; the
 {manifest: ProjectManifestSchema}`. No `Manifest` Prisma model ⇒ no barrel-collision
 suffix rule. No new env, no migration, no new npm dep.
 
-**E2E stub-fixture improvisation (the one place beyond the design docs — github-stub
+> **UPDATE 2026-07-25 (task 62, design-delta §11): the improvisation below is GONE, and
+> the constraint that forced it no longer exists.** `manifest.e2e.ts` now seeds ONE per-run
+> private fixture repo on real github.com and cuts FOUR real branches from `main`, then
+> commits real files with `PUT /repos/:o/:r/contents/...` using the installation token:
+> `valid` (a real manifest), `other` (a different body, so the explicit `?ref=` case
+> exercises REAL GitHub ref semantics), `badjson` (literal `{ this is not valid json`),
+> `badschema` (`manifestVersion: 2`), and an `absent` branch with no manifest file — for
+> which the spec asserts the BRANCH EXISTS first, or a wrong `ref` yields a
+> passing-for-the-wrong-reason 404. All five error cases are **file-content** injection,
+> not provider-behaviour injection, so none needed reclassifying to unit. The 409
+> no-connection case dropped its seed call entirely: it short-circuits before any egress,
+> and zero-egress is a genuine simplification the stub hid.
+> Newly in play, recorded because the stub never exercised them: the Contents API's 1 MB
+> inline cap + representation switch, and multi-segment paths (the stub handled one
+> segment). See [[real-github-e2e-harness]].
+
+**E2E stub-fixture improvisation (HISTORICAL — the one place beyond the design docs — github-stub
 got its own in-memory Contents store):** the endpoint hits GitHub's Contents API over
 HTTP, not git; the git-server stub (smart-HTTP only, 4805) can't serve a Contents
 response and shares no filesystem with github-stub, and shelling `git` in a stub
