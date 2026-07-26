@@ -88,5 +88,37 @@ still accepts ordinary ids. A new `/:someId` route with an ungated schema fails 
 written. That is the property both earlier passes lacked — and it is a schema test, so it needs
 no database.
 
+## SCOPE — corrected 2026-07-26 (revision W3). Read this before quoting the rule
+
+The module's own JSDoc said "every request-derived string **on the surface** passes through
+it at its own boundary". **That is wider than the code, and the doc has been narrowed.**
+Measured off the real route table: the api has **FOURTEEN `body` schemas across ten route
+files, and exactly ONE is wrapped** — `POST /v1/renders/:id/gallery`. Genuinely ungated
+bodies that reach Prisma with a caller's string include `POST /v1/projects` and
+`PATCH /v1/projects/:id` (`name` → `project.create` / `project.update`),
+`POST /v1/ai/generations` (`input` → a jsonb column), and `/v1/projects/import`,
+`/:id/commit`, `/:id/publish`, `/:id/renders`.
+
+They stay ungated **on purpose**, for the same reason the `preValidation` hook was rejected:
+this was a gallery task (rows 39/40/41), and gating them changes the error contract of seven
+route files nobody in that run reviewed, measured or tested. Same defect class as the
+anonymous 500s, one authentication step further in — **their own task, with its own sweep.**
+
+`src/routes/body-gate.test.ts` now holds the inventory to the real route table: the set of
+routes declaring a body must equal the documented GATED + UNGATED lists, so a new body route
+cannot join silently, and the one gated body is proven behaviourally (it refuses an unsafe
+string in every one of its four string fields and still accepts a clean one). It is an
+INVENTORY, not a gate, and its header says so. When the bodies get their task, UNGATED
+shrinks to `[]` and it becomes the gate its sibling already is.
+
+Also W3: the 17-line gate paragraph had been **copy-pasted into five route files** and each
+copy asserted "MEASURED on every route below before this change" — but the measured sweep
+lists eight 500s in `projects.ts` / `renders.ts` / `project-jobs.ts` only, so `manifests.ts`
+and every `ai-generations.ts` route claimed a measurement nobody performed. Six copies of one
+rule is the exact opposite of this memory's title. All five are now a single line pointing at
+`../postgres-text` and `./path-params-gate.test.ts`; the long form lives here, once.
+(`routes/gallery.ts`'s paragraph is a DIFFERENT one — publish body + the rejected cuid-regex
+alternative — and stays.)
+
 Related: [[bound-is-not-safe-postgres-value-gates]] (round 1's four defect classes),
 [[a-test-that-claims-a-class-must-drive-the-class]], [[gallery-backend-built]].
