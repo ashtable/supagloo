@@ -343,7 +343,7 @@ describe("PART V invariant 6 — DBOS_SYSTEM_DATABASE_SCHEMA parity across api a
   // "287 passed" — 23 tests silently stopped reporting, the exact green-lie shape this suite
   // exists to prevent. A missing file is the "declares neither service" case, which the
   // per-file assertion below already treats as passing.
-  const readServices = (name: string): ComposeFile["services"] => {
+  const readServices = (name: string): NonNullable<ComposeFile["services"]> => {
     let raw: string;
     try {
       raw = readFileSync(resolve(ROOT, name), "utf8");
