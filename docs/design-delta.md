@@ -297,15 +297,16 @@ prompt).
 *~~Still undesigned, per Turn 15's own "try next" list — non-blocking future
 work, not blockers for this delta: the gallery item detail/watch page, the
 "Share yours" publish-to-gallery dialog, and a creator profile page.~~*
-**AMENDED 2026-07-26 — all three are now DESIGNED; one is built.** The design
+**AMENDED 2026-07-26 — all three are now DESIGNED; 16a and 16b are built.** The design
 author added **Turn 16** ("Watch page + share dialog — 16a: gallery video detail
 / watch page · 16b: 'Share yours' publish-to-gallery dialog — both from 15a") and
 **Turn 17** ("Creator profile + gallery states — 17a: a creator's public profile ·
 17b: gallery empty state & moderation states — from 15a"). The two deferrals this
 paragraph recorded are therefore **discharged as deferrals** — the same treatment
 rows 63–68 got — and replaced by the build status in §2.7.1 below. A **new**
-deferral takes their place: 17a's creator profile and 17b's moderation states,
-which are designed and deliberately unbuilt.
+deferral takes their place: 17a's creator profile and 17b's three moderation
+states, which are designed and **out of scope by explicit user decision** —
+recorded, with the data gaps behind them, in `docs/plan.md` §5.
 
 #### 2.7.1 Turn 16 / Turn 17 — the gallery follow-on screens, as built
 
@@ -318,14 +319,18 @@ turns are pure HTML wireframe markup inside `Supagloo Wireframes.dc.html`, and t
 | Option | Design author's own title | Status |
 |---|---|---|
 | **16a** | Watch page (gallery video detail) | **BUILT** — `/gallery/[id]` |
-| **16b** | "Share yours" publish-to-gallery dialog | **DESIGNED, NOT BUILT** |
+| **16b** | "Share yours" publish-to-gallery dialog | **BUILT** — `app/_components/gallery/publish-to-gallery-dialog.tsx`, one dialog replacing **both** task-41 placeholders |
 | **17a** | Creator profile | **DESIGNED, NOT BUILT** — and not buildable as drawn |
-| **17b** | Gallery empty + moderation states | **DESIGNED, NOT BUILT** — 3 of 4 cards contradict the shipped contract |
+| **17b** | Gallery empty + moderation states | **card 4a (empty state) BUILT**; the other **3 cards DESIGNED, NOT BUILT** — they contradict the shipped contract |
 
-*Build status is as of the 2026-07-26 doc pass. 16b's implementation was **in
-flight** when this table was written (red-first unit specs present, modules not
-yet); re-check `app/_components/gallery/publish-to-gallery-dialog.tsx` before
-relying on the "NOT BUILT" cell.*
+*Build status **corrected 2026-07-26 at release** (`docs/plan.md` row 71). The
+earlier version of this table said 16b was NOT BUILT with a footnote that its
+implementation was "in flight"; it landed, along with 17b's card 4a, so both cells
+are now settled rather than provisional. `share-yours-dialog.tsx` and the inline
+publish form in `your-videos-list.tsx` — task 41's two placeholders — were deleted
+in the same pass. The remaining "NOT BUILT" cells are **out of scope by explicit
+user decision**, not merely unscheduled; `docs/plan.md` §5 carries the reasons and
+the data gaps (D1/D5/D7/D9/D10/D11/D12) behind them.*
 
 **16a was TRANSCRIBED, not invented.** This matters for precedence: it is not a
 hand-designed extension a later turn may freely overrule, it is an implementation
@@ -1500,11 +1505,14 @@ inline in §10, following Q10's "accepted risk, not resolved" pattern.)*
    **Turn 16** (16a watch page, 16b "Share yours" dialog) and **Turn 17** (17a
    creator profile, 17b empty + moderation states). This clause is therefore
    discharged as a *deferral*; §2.7.1 carries the per-screen build status. Short
-   version: **16a is built** (`/gallery/[id]`, transcribed from the wireframe);
-   **16b, 17a and 17b are designed and not built**, and 17b's three moderation
-   cards contradict the shipped immediate-201 publish contract in §7. Turn 15
-   remains the authority for the grid itself (15a); nothing in Turns 16–17
-   changes it.
+   version: **16a and 16b are built** (`/gallery/[id]` and the one
+   publish-to-gallery dialog, both transcribed from the wireframes), and so is
+   **17b's card 4a** (the `GALLERY · NO RESULTS` empty state). **17a and 17b's
+   three moderation cards are out of scope by explicit user decision** — the
+   moderation cards presume an asynchronous review queue, which contradicts the
+   immediate-201 publish contract in §7, so building them is a product decision
+   about whether publishing stops being immediate. Turn 15 remains the authority
+   for the grid itself (15a); nothing in Turns 16–17 changes it.
 4. **"Nothing is stored on our servers" vs S3 assets** (deviation flag).
    Generated media and rendered videos live in Supagloo's bucket; only
    composition *source* stays in the user's repo. The landing/workspace copy
