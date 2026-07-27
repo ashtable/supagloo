@@ -104,18 +104,23 @@ Resolved sign-off item from plan §6: `mintInstallationToken` lives in
 `database-lib` (shared), not duplicated per service. See
 [[github-app-installation-tokens]] and [[github-app-pem-normalization]].
 
-## A RUNNING `supagloo-dbos-1` SILENTLY FAILS THREE api e2e FILES — diagnose this first
+## A RUNNING `supagloo-dbos-1` USED TO SILENTLY FAIL THREE api e2e FILES — **FIXED 2026-07-26**
 
-Diagnosed 2026-07-26. The api e2e lane's DBOS-touching specs register an **in-process stand-in
-workflow under the real shared workflow name on the real queue**, and therefore all assume the
-Compose `dbos` container is NOT running (stated verbatim at `tests/e2e/renders.e2e.ts:49`; the same
-assumption is recorded in [[api-job-creation-polling-built]]). `global-setup.ts` starts only
-`postgres minio minio-init`, so the assumption holds on a clean machine — but a `dbos` container
-left up from earlier work is a **competing consumer**: it grabs the enqueued workflow first, runs
-the REAL workflow against fixtures that were never provisioned for it, and fails it. The spec's
-stand-in never sees the work.
+**Do not chase this any more, and never "fix" it by stopping the container.** See
+[[dbos-e2e-lane-schema-isolation]] for the mechanism that closed it. History kept because the
+symptom table is still the fastest way to recognise a *regression* of the fix.
 
-Symptom → cause, so this is not re-diagnosed from scratch:
+Diagnosed and fixed the same day. The api e2e lane's DBOS-touching specs register an **in-process
+stand-in workflow under the real shared workflow name on the real queue**, and used to assume an
+idle Compose `dbos` service. Two things were wrong with that assumption: it was **unsatisfiable**
+across a full sweep (root's own e2e lane and nextjs's render lane both bring `dbos` up on purpose),
+and `project-jobs.e2e.ts`'s stated justification for it — that global-setup did not start the
+service — was **false at the time it was written** (root `tests/e2e/global-setup.ts` starts `dbos`).
+A running container is a **competing consumer**: it grabs the enqueued workflow first, runs the REAL
+workflow against fixtures never provisioned for it, and fails it. The stand-in never sees the work.
+
+Symptom table — now the signature of a REGRESSION of the schema-isolation fix, not of an
+un-stopped container:
 
 | Spec | Visible failure | Container log |
 |---|---|---|
@@ -123,12 +128,5 @@ Symptom → cause, so this is not re-diagnosed from scratch:
 | `ai-generations.e2e.ts` | same poll timeout, `last=failed` | `OpenRouterNotConnectedError: no OpenRouter connection for user …` |
 | `project-jobs.e2e.ts` | flaky poll timeout | same family |
 
-It reads exactly like a code regression in whatever you are currently working on, and it is not.
-**Confirm before chasing it**: `docker ps` for `supagloo-dbos-1`, then `docker logs supagloo-dbos-1`
-for the errors above. Fix = stop that container for the run. Cross-check that costs nothing: stash
-your work and re-run the same three files — 2026-07-26's clean-HEAD run failed *more* (6 in
-`renders.e2e.ts`) than the working tree did (4), which also shows the set of failures varies
-run-to-run.
-
-Everything NOT in that table is green under `postgres minio minio-init` alone: 9 files passed /
-1 skipped (`auth-live-youversion`, the loud-skip live spec), 69 tests.
+If you see that table today, the lane's `systemDatabaseSchemaName` wiring has been dropped — and
+the `assert*` probes should have caught it first and named the remedy.

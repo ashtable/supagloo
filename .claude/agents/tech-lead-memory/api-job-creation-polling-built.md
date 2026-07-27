@@ -88,9 +88,10 @@ workflow module and the containerized worker can't see uncommitted db-lib
 ProjectJob row queued→running→succeeded via a two-gate barrier (module-level, like the
 task-17 crash-test boundary hook) so all three states are observed deterministically and
 a job can be HELD in-flight to fire the 409. `updateMany` (not `update`) so a synthetic
-jobId with no row no-ops (used by the workflowID-idempotency probe). ASSUMES the root
-Compose `dbos` container is NOT running (global-setup never starts it) — same assumption
-the dbos repo's own e2e makes; a competing git-ops worker would break it. The REAL
+jobId with no row no-ops (used by the workflowID-idempotency probe). It USED TO assume an
+idle Compose `dbos` service, on a justification that was already false — **superseded
+2026-07-26 by [[dbos-e2e-lane-schema-isolation]]**: the spec now runs on its own DBOS system
+schema and passes with the container up or down. The REAL
 scaffold workflow's git behaviour stays proven by the dbos repo's scaffold e2e.
 GOTCHA: the GET response is the `{ job }` envelope (`{project}`/`{versions}` convention) —
 the e2e helper must unwrap `.job`.
