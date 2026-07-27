@@ -157,6 +157,16 @@ services:
       RENDER_MEDIA_TIMEOUT_SECONDS: ${RENDER_MEDIA_TIMEOUT_SECONDS:-3600}
       RENDER_BUNDLE_TIMEOUT_SECONDS: ${RENDER_BUNDLE_TIMEOUT_SECONDS:-900}
       RENDER_INSTALL_TIMEOUT_SECONDS: ${RENDER_INSTALL_TIMEOUT_SECONDS:-900}
+      # Step-11 item 9 (R45-1). Remotion's OWN per-frame `delayRender()` budget — a
+      # DIFFERENT quantity from RENDER_MEDIA_TIMEOUT_SECONDS above, which is the
+      # child-process KILL deadline. Row 45 shipped them EQUAL, which made the Remotion
+      # timeout unreachable by construction: its clock starts after browser launch and
+      # composition resolution and `waitForReady` adds +3000 ms, so the SIGTERM always won.
+      # It MUST stay strictly below RENDER_MEDIA_TIMEOUT_SECONDS × 1000; dbos now refuses
+      # to boot otherwise (`loadEnv` cross-field check) and `buildRenderMediaOptions`
+      # throws as a second line of defence. So do NOT lower the kill deadline to <= 120 s
+      # without lowering this with it.
+      RENDER_MEDIA_FRAME_TIMEOUT_MS: ${RENDER_MEDIA_FRAME_TIMEOUT_MS:-120000}
       RENDER_NARRATION_MODEL: ${RENDER_NARRATION_MODEL:-}
       RENDER_MUSIC_MODEL: ${RENDER_MUSIC_MODEL:-}
       # Plan row 42 — the nightly `cleanupOrphanedAssetsWorkflow`. Both OPTIONAL with real
@@ -166,6 +176,12 @@ services:
       # fixtures, whose age is measured in seconds.
       CLEANUP_RETENTION_HOURS: ${CLEANUP_RETENTION_HOURS:-168}
       CLEANUP_DRY_RUN: ${CLEANUP_DRY_RUN:-false}
+      # Step-11 item 12 (R42-3). Per-model batch cap on the sweep's candidate rows, applied
+      # as `take` with `orderBy: { createdAt: "asc" }` so a run is bounded at 2 × the cap S3
+      # ListObjectsV2 calls and drains the oldest orphans first. MEASURED pre-fix on the live
+      # dev DB: 134 + 181 = 315 sequential LISTs inside ONE DBOS step, growing every night,
+      # all discarded by a crash partway through.
+      CLEANUP_MAX_ITEMS_PER_RUN: ${CLEANUP_MAX_ITEMS_PER_RUN:-500}
     # Plan row 45 / D45.5. `renderWorkflow` drives a headless Chromium in this container.
     # Docker's default /dev/shm is 64MB; Chromium's renderer processes use shared memory
     # and die with a bare, unattributable crash when it runs out. This is a CORRECTNESS
@@ -188,16 +204,30 @@ services:
       context: ./supagloo-nextjs
       dockerfile: Dockerfile
       args:
-        # Plan row 43 / D43.3, MEASURED. `next build` collects page data for /_not-found,
-        # which evaluates `app/layout.tsx`, which re-reads the validated config — so with
-        # NO build-time value the image cannot be built at all (this service had never
-        # been built successfully, which is why nothing had noticed). A build arg is baked
-        # into the image's prerendered output and into `docker history`, so the REAL
-        # credential must never be one: this is a deliberate non-secret placeholder, and
-        # the `environment:` block below is what supplies the real key to the running
-        # container. The runner stage inherits no ENV from the builder stage, so a
-        # container started without that block still refuses to boot — which is exactly
-        # what makes row 43's negative Compose case a real assertion.
+        # Plan row 43 / D43.3 — CORRECTED by Step-11 item 8 (RX-1). A build arg is baked
+        # into every image layer and into `docker history`, so the REAL credential must
+        # never be one: this is a deliberate non-secret placeholder.
+        #
+        # THE EARLIER COMMENT HERE WAS WRONG, and the error shipped. It reasoned correctly
+        # that the runner stage inherits no ENV from the builder stage, and then concluded
+        # that the `environment:` block below therefore supplies the real key to the running
+        # container. That conclusion did not hold for statically PRERENDERED routes:
+        # `app/layout.tsx` read the key at module scope during `next build`, the value
+        # crossed a client-component boundary into the RSC payload, and MEASURED, this exact
+        # placeholder ended up in 33 files under `/app/.next` — including `/`, `/gallery`,
+        # `/profile`, `/studio`, `/your-videos` and both OAuth callbacks. A container given
+        # the correct YV_APP_KEY served the PLACEHOLDER, 200 OK, with no clue anywhere in its
+        # env, logs or `docker inspect`.
+        #
+        # `app/layout.tsx` now reads it per request behind `await connection()`, so the
+        # `environment:` block below really is the source of truth — and it is asserted as
+        # such by `tests/e2e/boot-hardening.e2e.ts` E-BH8, on the SERVED BYTES, because no
+        # static read of this file could ever have caught the above.
+        #
+        # This value is also no longer load-bearing for the build (a `next build` with
+        # YV_APP_KEY unset exits 0). It stays because an undeclared build arg is a warning,
+        # and because a container started WITHOUT the runtime bridge must still refuse to
+        # boot — which is what makes row 43's negative Compose case a real assertion.
         YV_APP_KEY: build-time-placeholder-not-a-real-key
     environment:
       # Task 43 / D43.3. nextjs reads YV_APP_KEY SERVER-side (it is deliberately not a

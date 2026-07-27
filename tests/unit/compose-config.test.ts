@@ -267,15 +267,24 @@ describe("docker-compose.yml", () => {
     });
 
     it("passes only a NON-SECRET placeholder as the build arg", () => {
-      // MEASURED, and it qualifies D43.3's "runtime env, NOT a build arg": with no build
-      // arg at all the image cannot be built — `next build` fails collecting page data for
-      // /_not-found because app/layout.tsx re-reads the validated config at module scope.
-      // So a build-time value is required for the image to exist, and a RUNTIME value is
-      // required for the boot refusal to be observable. They are satisfied separately: the
-      // real credential is never a build arg (a build arg is baked into the image's
-      // prerendered output and into `docker history`), and the runner stage inherits no
-      // ENV from the builder stage, so the running container's key comes only from
-      // `environment:` above.
+      // WHAT THIS ASSERTS, precisely: the REAL credential is never a build arg. A build arg
+      // is baked into every image layer and into `docker history`, so a secret there is
+      // published. That is the whole content of this case.
+      //
+      // WHAT IT DOES NOT ASSERT — reworded after RX-5, because the old comment read as a
+      // certificate of runtime behaviour and was for a while the ONLY assertion anywhere
+      // about this value, which meant root's suite certified a broken configuration. This
+      // is a static read of a YAML file. It cannot see that the image once baked this exact
+      // placeholder into 33 prerendered payloads under `/app/.next` and served it to
+      // browsers regardless of the container's `YV_APP_KEY`. Only a running container can,
+      // and that is `tests/e2e/boot-hardening.e2e.ts`'s E-BH8 — pinned below so this file
+      // can never again be the only thing looking at it.
+      //
+      // (The arg is also no longer load-bearing for the build: since item 8's fix
+      // `app/layout.tsx` reads the key per request behind `await connection()`, and a
+      // `next build` with YV_APP_KEY entirely unset exits 0. It stays declared because an
+      // undeclared build arg is a warning, and because the placeholder is what makes a
+      // container started WITHOUT the runtime bridge refuse to boot.)
       const build = services.nextjs?.build as
         | { args?: Record<string, string> }
         | undefined;
@@ -283,6 +292,17 @@ describe("docker-compose.yml", () => {
       expect(arg, "nextjs build args must set YV_APP_KEY").toBeDefined();
       expect(arg).not.toContain("${");
       expect(arg).toMatch(/placeholder/i);
+    });
+
+    it("is NOT the only assertion about that value — E-BH8 asserts the served bytes", () => {
+      // RX-5. The defect this pins is a coverage shape, not a config value: a suite in which
+      // the placeholder is asserted as an invariant and no test ever asserts a HEALTHY
+      // nextjs. Keyed to the runtime key reaching the response body, because that is the
+      // property the placeholder defeated.
+      const spec = readFileSync(resolve(ROOT, "tests/e2e/boot-hardening.e2e.ts"), "utf8");
+      expect(spec).toContain("E-BH8");
+      expect(spec).toMatch(/not\.toContain\("build-time-placeholder-not-a-real-key"\)/);
+      expect(spec).toMatch(/expect\(body\)\.toContain\(RUNTIME_KEY\)/);
     });
   });
 });

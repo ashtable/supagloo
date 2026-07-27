@@ -40,8 +40,8 @@
  * ---------------------------------------------------------------------------------------
  * WHAT IT PROVES, AND HOW (D45.2)
  * ---------------------------------------------------------------------------------------
- *  - "concurrency 1/worker" — STRUCTURALLY, by reading `render: { workerConcurrency: 1 }`
- *    out of the dbos checkout's `registry.ts` before enqueueing anything, and then
+ *  - "concurrency 1/worker" — STRUCTURALLY, by reading the compiled `QUEUE_CONFIG` OUT OF
+ *    THE BUILT `supagloo-dbos:latest` IMAGE before enqueueing anything, and then
  *    OBSERVATIONALLY, from the workflow rows' own timestamps and from snapshots of
  *    `dbos.workflow_status`. Never by watching `docker stats` on a timer and inferring it
  *    (memory: `no-long-running-samplers-to-prove-a-precondition`). `docker stats` is used
@@ -49,21 +49,29 @@
  *  - the memory profile — peak/mean RSS of the `dbos` container across the run.
  *  - "without OOM/timeout" — every enqueued RenderJob reaches `completed`.
  *
+ * R45-2, and the reason the structural half reads an artifact rather than a file: this
+ * script used to read `~/code/supagloo-nodejs-dbos` while `docker-compose.yml` builds
+ * `./supagloo-nodejs-dbos` (the submodule), and Step 8's M13 confirmed the two DIFFERED —
+ * the submodule had no `media-options.ts` at all. The gitignored
+ * `docker-compose.override.yml` can point the build context at either tree, so neither path
+ * can honestly be called "what the container was built from". The image can.
+ *
  * Usage:
  *   npm run load:render                          # N = 2
  *   npm run load:render -- --count 4
  *   npm run load:render -- --render-job <id>     # pin the subject
  *   npm run load:render -- --dry-run             # resolve + verify, enqueue nothing
+ *   npm run load:render -- --cleanup             # OPT-IN teardown; see docs §5
  */
 
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import pg from "pg";
 import { DBOSClient } from "@dbos-inc/dbos-sdk";
+import { DeleteObjectsCommand, S3Client } from "@aws-sdk/client-s3";
 
 import {
   discoverInstallation,
@@ -73,19 +81,31 @@ import {
   resolveGithubE2eSecrets,
 } from "../tests/support/e2e-github-api.mjs";
 import {
+  DBOS_REGISTRY_PROBE,
   assertNoProviderSpend,
-  assertRenderQueueSerial,
+  assertRenderQueueSerialFromImage,
+  assertRendersRanSerially,
+  buildSubjectCandidateQuery,
   maxSimultaneousRunning,
   parseDockerStatsRow,
   parseLoadConfig,
-  readWorkflowNames,
+  readWorkflowNamesFromImage,
+  renderJobTeardownKeys,
   summarizeLoadRun,
   summarizeMemorySamples,
 } from "./render-load-harness.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const DBOS_CHECKOUT = resolve(ROOT, "..", "supagloo-nodejs-dbos");
 const DBOS_CONTAINER = "supagloo-dbos-1";
+
+/** The Compose-published dev MinIO endpoint + credentials, used only by `--cleanup`. */
+const DEV_S3 = {
+  endpoint: "http://localhost:9000",
+  bucket: "supagloo-dev",
+  accessKeyId: "supagloo",
+  secretAccessKey: "supagloo-dev",
+  region: "us-east-1",
+};
 
 /** The manifest's canonical path inside every project repo (dbos `src/remotion/generate.ts`). */
 const MANIFEST_PATH = "supagloo.project.json";
@@ -101,28 +121,14 @@ function log(...args) {
 /**
  * A render subject: a project whose repo really holds a scaffolded Remotion project and
  * whose version really rendered once before. Picked by "most recently completed render",
- * because that is the strongest available evidence that the whole chain still works.
+ * because that is the strongest available evidence that the whole chain still works — one
+ * per PROJECT, and never one of the harness's own rows (R45-4; the SQL and the reasoning
+ * live in `buildSubjectCandidateQuery`, which is unit-tested).
  */
 async function resolveSubjectCandidates(db, explicitRenderJobId) {
-  const { rows } = await db.query(
-    `SELECT rj.id            AS "renderJobId",
-            rj."projectId"   AS "projectId",
-            rj."versionId"   AS "versionId",
-            rj."userId"      AS "userId",
-            rj.width, rj.height, rj.fps, rj."aspectRatio", rj.codec,
-            p."repoOwner"    AS "repoOwner",
-            p."repoName"     AS "repoName",
-            pv."branchName"  AS "branchName"
-       FROM "RenderJob" rj
-       JOIN "Project" p         ON p.id  = rj."projectId"
-       JOIN "ProjectVersion" pv ON pv.id = rj."versionId"
-      WHERE rj.status = 'completed'
-        AND p."deletedAt" IS NULL
-        AND ($1::text IS NULL OR rj.id = $1::text)
-      ORDER BY rj."completedAt" DESC NULLS LAST
-      LIMIT 8`,
-    [explicitRenderJobId ?? null],
-  );
+  const { rows } = await db.query(buildSubjectCandidateQuery(), [
+    explicitRenderJobId ?? null,
+  ]);
   if (rows.length === 0) {
     // LOUD, never a silent skip. A harness that quietly did nothing would put "no findings"
     // in a sizing document, which is worse than no document.
@@ -185,11 +191,41 @@ async function fetchSubjectManifest(subject) {
   if (typeof encoded !== "string") {
     throw new Error(
       `render-load: ${subject.repoOwner}/${subject.repoName}@${subject.branchName} has no ` +
-        `${MANIFEST_PATH}. The subject's repo may have been archived by ` +
-        "`npm run cleanup:github-e2e`; pick another with --render-job.",
+        `${MANIFEST_PATH}. The repo may have been DELETED, or the branch may have moved. ` +
+        "(It is not `npm run cleanup:github-e2e`: that script ARCHIVES and never deletes, " +
+        "and an archived repo still clones and still serves GET /contents/ — verified.) " +
+        "Pick another subject with --render-job.",
     );
   }
   return JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+}
+
+/* ------------------------------------------------------------- running configuration */
+
+/**
+ * D45.2(a) — the STRUCTURAL half, read out of the artifact the container actually runs.
+ *
+ * One `docker run`, no polling, no timer. See {@link DBOS_REGISTRY_PROBE} and the R45-2
+ * note in this file's header for why a host source read cannot answer this question.
+ */
+function readRunningRegistry() {
+  const r = spawnSync("docker", DBOS_REGISTRY_PROBE.dockerArgs, { encoding: "utf8" });
+  if (r.status !== 0) {
+    throw new Error(
+      `render-load: could not read ${DBOS_REGISTRY_PROBE.module} out of ` +
+        `${DBOS_REGISTRY_PROBE.image}. That image is what the Compose \`dbos\` service runs, ` +
+        "so its queue configuration is the only one these numbers can honestly be about. " +
+        `Build it first (\`docker compose build dbos\`).\n${(r.stderr ?? "").trim()}`,
+    );
+  }
+  try {
+    return JSON.parse(r.stdout);
+  } catch {
+    throw new Error(
+      `render-load: ${DBOS_REGISTRY_PROBE.image} printed something that is not JSON:\n` +
+        `${(r.stdout ?? "").trim().slice(0, 400)}`,
+    );
+  }
 }
 
 /* ---------------------------------------------------------------------- sampling */
@@ -217,6 +253,71 @@ function sampleContainer() {
   }
 }
 
+/* ---------------------------------------------------------------------- teardown */
+
+/**
+ * R45-8 / D6 — OPT-IN self-teardown (`--cleanup`), DEFAULT OFF.
+ *
+ * Row 42's `cleanupOrphanedAssetsWorkflow` selects `status in (failed, canceled)` at both
+ * of its `findMany` sites, so the harness's `completed` rows and their `2N` MinIO objects
+ * are permanently outside its delete set. That is structural, not a backlog — hence this,
+ * and hence the doc saying so plainly.
+ *
+ * It is OFF by default because the app database and the single `supagloo-dev` bucket are
+ * SHARED with dev and with fifteen e2e lanes in four repos: a default-on delete is a
+ * destructive action taken on someone else's state without being asked. Everything below is
+ * scoped to ids this process created and to asset keys those rows themselves report.
+ *
+ * NOT reclaimed, deliberately: the DBOS `workflow_status` / `operation_outputs` rows in the
+ * default `dbos` schema. Deleting checkpoint rows out from under a running worker is not a
+ * supported operation and there is no SDK call for it; they are small, bounded by N, and
+ * `docs/render-sizing.md` §5 states that they stay.
+ */
+async function teardown(db, jobs, createdIds) {
+  if (createdIds.length === 0) return;
+  const keys = renderJobTeardownKeys(jobs);
+  log(`\n--cleanup: removing ${createdIds.length} row(s) and ${keys.length} object(s)`);
+
+  if (keys.length > 0) {
+    const s3 = new S3Client({
+      endpoint: DEV_S3.endpoint,
+      region: DEV_S3.region,
+      forcePathStyle: true,
+      credentials: {
+        accessKeyId: DEV_S3.accessKeyId,
+        secretAccessKey: DEV_S3.secretAccessKey,
+      },
+    });
+    try {
+      const res = await s3.send(
+        new DeleteObjectsCommand({
+          Bucket: DEV_S3.bucket,
+          Delete: { Objects: keys.map((Key) => ({ Key })), Quiet: false },
+        }),
+      );
+      log(`  · deleted ${res.Deleted?.length ?? 0} object(s) from ${DEV_S3.bucket}`);
+      // Reported, never swallowed: a partial delete leaves residue the doc says is gone.
+      for (const e of res.Errors ?? []) {
+        process.exitCode = 1;
+        log(`  ✗ ${e.Key}: ${e.Code} ${e.Message}`);
+      }
+    } finally {
+      s3.destroy();
+    }
+  }
+
+  // Deliberately keyed to `= ANY($1)` on ids this process minted, NOT to a
+  // `LIKE 'render-load-%'` sweep: a concurrent run's rows are not this run's to delete.
+  const { rowCount } = await db.query(`DELETE FROM "RenderJob" WHERE id = ANY($1::text[])`, [
+    createdIds,
+  ]);
+  log(`  · deleted ${rowCount} RenderJob row(s)`);
+  log(
+    "  · KEPT: the DBOS workflow_status/operation_outputs rows in the default `dbos` " +
+      "schema (no supported way to delete a worker's checkpoints; see docs §5)",
+  );
+}
+
 /* -------------------------------------------------------------------------- main */
 
 async function main() {
@@ -224,21 +325,21 @@ async function main() {
   const config = parseLoadConfig(process.argv.slice(2), process.env);
 
   // D45.2(a) — the STRUCTURAL half, checked before anything is enqueued. Sizing numbers
-  // measured against a differently-shaped queue would be worse than no numbers.
-  assertRenderQueueSerial(
-    readFileSync(resolve(DBOS_CHECKOUT, "src/dbos/registry.ts"), "utf8"),
+  // measured against a differently-shaped queue would be worse than no numbers. Read from
+  // the IMAGE, which is the only artifact that is unambiguously what the worker runs
+  // (R45-2).
+  const registry = readRunningRegistry();
+  assertRenderQueueSerialFromImage(registry);
+  log(
+    `✓ QUEUE_CONFIG.render.workerConcurrency === 1 (read from ${DBOS_REGISTRY_PROBE.image}` +
+      `:${DBOS_REGISTRY_PROBE.module})`,
   );
-  log(`✓ QUEUE_CONFIG.render.workerConcurrency === 1 (read from ${DBOS_CHECKOUT})`);
 
-  // The names are a cross-repo contract with one authored home, and the workflow's is
-  // `"render"` — NOT `"renderWorkflow"`. db-lib is nested inside the dbos checkout as a
-  // `file:` dependency, which is the copy the running container was actually built from.
-  const { workflowName, queueName } = readWorkflowNames(
-    readFileSync(
-      resolve(DBOS_CHECKOUT, "supagloo-database-lib/src/workflows.ts"),
-      "utf8",
-    ),
-  );
+  // The names are a cross-repo contract with one authored home in db-lib, and the
+  // workflow's is `"render"` — NOT `"renderWorkflow"`. Taken from the same artifact read, so
+  // they are the names the running worker REGISTERED rather than the names some checkout
+  // declares.
+  const { workflowName, queueName } = readWorkflowNamesFromImage(registry);
   log(`✓ enqueue target: workflow "${workflowName}" on queue "${queueName}"`);
 
   const db = new pg.Client({ connectionString: config.appDatabaseUrl });
@@ -275,8 +376,8 @@ async function main() {
     if (!subject) {
       throw new Error(
         "render-load: no usable render subject. Every candidate was rejected — either its " +
-          "repo is gone (archived by `npm run cleanup:github-e2e`) or rendering it would " +
-          `make real provider calls, ${config.count} time(s) over:\n${rejected.join("\n")}`,
+          "repo is gone / its manifest drifted, or rendering it would make real provider " +
+          `calls, ${config.count} time(s) over:\n${rejected.join("\n")}`,
       );
     }
     for (const line of rejected) log(`· skipped${line.slice(1)}`);
@@ -352,7 +453,8 @@ async function main() {
     try {
       while (Date.now() < deadline) {
         const { rows } = await db.query(
-          `SELECT id, status, "startedAt", "completedAt", "framesDone", "framesTotal", error
+          `SELECT id, status, "startedAt", "completedAt", "framesDone", "framesTotal", error,
+                  "outputAssetKey", "thumbnailAssetKey"
              FROM "RenderJob" WHERE id = ANY($1::text[]) ORDER BY id`,
           [createdIds],
         );
@@ -395,8 +497,13 @@ async function main() {
     log(`per-render seconds : ${summary.durationsSeconds.map((s) => s.toFixed(1)).join(", ") || "-"}`);
     log(`p50 / max seconds  : ${summary.p50Seconds?.toFixed(1) ?? "-"} / ${summary.maxSeconds?.toFixed(1) ?? "-"}`);
     log(`wall-clock span    : ${summary.spanSeconds?.toFixed(1) ?? "-"} s`);
-    log(`overlap ratio      : ${summary.overlapRatio?.toFixed(3) ?? "-"}  (1.000 = strictly serial)`);
-    log(`max simultaneous   : ${maxRunning}  (workerConcurrency is 1)`);
+    // R45-3. These two lines say DIFFERENT things and the first used to be printed as if it
+    // said the second. `overlapRatio` is utilization (Σdurations ÷ span): `> 1` implies
+    // overlap, `<= 1` implies NOTHING, because idle time masks overlap elsewhere.
+    // `max concurrent renders` is the exact sweep over the rows' execution intervals.
+    log(`utilization ratio  : ${summary.overlapRatio?.toFixed(3) ?? "-"}  (Σdurations ÷ span — NOT an overlap test)`);
+    log(`max concurrent     : ${summary.maxIntervalOverlap}  (exact, from startedAt/completedAt — 1 = serial)`);
+    log(`max simultaneous   : ${maxRunning}  (PENDING workflows in the polled snapshots)`);
     log(`dbos peak RSS      : ${memory.peakBytes !== null ? (memory.peakBytes / 1024 ** 2).toFixed(0) + " MiB" : "-"} of ${memory.limitBytes !== null ? (memory.limitBytes / 1024 ** 3).toFixed(2) + " GiB" : "-"} (${memory.peakPercentOfLimit?.toFixed(1) ?? "-"}%)`);
     log(`dbos mean RSS      : ${memory.meanBytes !== null ? (memory.meanBytes / 1024 ** 2).toFixed(0) + " MiB" : "-"} over ${memory.samples} samples`);
     log(`dbos peak CPU      : ${memory.peakCpuPercent ?? "-"} %`);
@@ -406,6 +513,29 @@ async function main() {
     if (summary.completed !== summary.total) {
       process.exitCode = 1;
       log("\n✗ not every render completed — see the `error` column above.");
+    }
+
+    // D45.2(b), R45-3. The serialization claim, gated AFTER the numbers are printed so a
+    // failure still leaves the operator the full picture — but loudly, and non-zero, so it
+    // can never be quoted as "renders ran serially" on the strength of a ratio.
+    try {
+      assertRendersRanSerially(jobs);
+      log("\n✓ serialization: at most 1 render interval was ever open at a time (exact)");
+    } catch (err) {
+      process.exitCode = 1;
+      log(`\n✗ ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    if (config.cleanup) {
+      await teardown(db, jobs, createdIds);
+    } else if (createdIds.length > 0) {
+      log(
+        `\n· residue kept (default): ${createdIds.length} RenderJob row(s) ` +
+          `render-load-${runId}-*, their DBOS workflow rows, and ` +
+          `${renderJobTeardownKeys(jobs).length} MinIO object(s). Row 42's janitor will ` +
+          "NEVER reclaim these — it selects failed/canceled jobs and these are completed. " +
+          "Pass --cleanup to remove the rows and the objects (see docs/render-sizing.md §5).",
+      );
     }
   } finally {
     await client?.destroy().catch(() => {});

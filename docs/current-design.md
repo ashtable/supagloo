@@ -54,7 +54,7 @@ What is REAL and working end to end today:
   page** and **"Your videos"** are wired to the real gallery endpoints.
 - **Testing**: every e2e lane in every repo runs against the **real** providers —
   YouVersion, Gloo, OpenRouter **and GitHub**. There are no provider stubs left
-  (§5). Since 2026-07-26 the fourteen e2e lanes that boot an in-process DBOS
+  (§5). Since 2026-07-26 the fifteen e2e lanes that boot an in-process DBOS
   runtime each own a **per-lane DBOS system schema**, so they no longer require
   the Compose `dbos` container to be stopped (§5.4 item 9).
 
@@ -527,7 +527,7 @@ authorization): a spec may shim *only that hop*, and everything after it is real
   against the real system DB + app DB + MinIO, including crash/replay tests (kill
   or cancel the worker mid-workflow, resume, assert no duplicated side effects —
   verified by DBOS system-DB step-execution counts **plus** real-host artifact
-  reads; see §5.4). All ten specs run their own in-process runtime under the real
+  reads; see §5.4). All eleven lanes run their own in-process runtime under the real
   registry names, so they carry the same coupling as the api four — and worse
   before the fix, since an in-process worker's auto-computed application version
   *matches* the container's, leaving nothing to tell the two apart. The heavy
@@ -776,10 +776,10 @@ These are load-bearing properties of today's test suite:
    `gotoStudio` copies and the three latent fixed-sleep sites in
    `studio.e2e.ts`. The standing rule it encodes: **wait on a mount-gated testid
    or an explicit hydration predicate, never on an SSR'd one.**
-9. **Fourteen e2e lanes are isolated by a per-lane DBOS system SCHEMA, and that
-   config is load-bearing.** Because the api's four specs and the dbos repo's ten
-   specs all register stand-in workflows under the REAL shared names on the REAL
-   shared queues (§5.1), and because the api enqueues with **no** `appVersion` —
+9. **Fifteen e2e lanes are isolated by a per-lane DBOS system SCHEMA, and that
+   config is load-bearing.** Because the api's four specs and the dbos repo's
+   eleven specs all register stand-in workflows under the REAL shared names on the
+   REAL shared queues (§5.1), and because the api enqueues with **no** `appVersion` —
    so every row lands `application_version = NULL`, and the SDK's dequeue
    predicate is `status = $1 AND queue_name = $2 AND (application_version IS NULL
    OR application_version = $3)` — a NULL-version row is dequeuable by *any*
