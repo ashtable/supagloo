@@ -153,7 +153,7 @@ stub service or a `GITHUB_*` override creeps back into it.
 | 38 (Done!) | Render UI wired: `render-model.ts` fake ticker → real polling; 14c overlay (stages, frame counts, output spec) from `GET /v1/renders/:id`; cancel button; "Run in background"; download link | nextjs | 28, 37 | Overlay state mapping from polled fixtures (replaces ticker tests); background dismissal keeps polling; cancel flow | **Stagehand** (real stack, small fixture render): trigger render → overlay tracks real frames → completed → download available; background mode allows continued editing | §5.3 row 8 |
 | 39 (Done!) | Gallery backend — publish + listing: `POST /v1/renders/:id/gallery` (owner), `DELETE /v1/gallery/:id`, public `GET /v1/gallery?sort=popular\|newest\|trending&book=&q=&cursor=` (trending = time-decayed SQL over `upvoteCount`+`publishedAt`), `GET /v1/gallery/:id`, `GET /:id/stream-url` (short-TTL presign) | api (+ db-lib DTOs) | 13, 37 | `scriptureBook` derivation from references (GEN etc.); trending-expression ordering properties; cursor pagination; visibility rules (`public`/`unlisted`) | Real HTTP: publish a completed render → appears in public **unauthenticated** listing; all three sorts + book filter + search behave on seeded data; stream-url plays; unlisted hidden from listing but reachable by id | §2.7, §6c, §8; Turn 15; publish is plain CRUD, deliberately **not** a workflow (§7) |
 | 40 (Done!) | Gallery upvotes: `POST`/`DELETE /v1/gallery/:id/upvote` (authed) — `GalleryUpvote` insert/delete + `upvoteCount` in the **same transaction**; viewer vote state in listings; rank badges data (popular sort) | api (+ db-lib DTOs) | 10, 39 | Idempotency via composite unique; count math on vote/unvote; anonymous request → 401 | Real HTTP: duplicate vote is a no-op (count stable); concurrent votes from N seeded users → exact count; listing reflects viewer's own vote state when authed | §2.7, §8; Turn 15 |
-| 41 (Done!) | Gallery UI (Turn 15) + "Your videos": public `/gallery` grid (sort segmented control, "All books ▾", search, Load more, duration badges, rank badges incl. 🏆 #1, filled/outlined upvote pills, sign-in prompt for anon voters); minimal publish affordance + inline/modal playback via stream-url; "Your videos" from `GET /v1/renders?mine=1` | nextjs | 23, 39, 40 | Card/pill/badge components; sort/filter state; anon-vote prompt logic | **Stagehand** (real stack, seeded gallery): browse signed-out, switch sorts/filters, attempt vote → sign-in prompt; sign in → vote toggles pill + count | §5.3 row 9; Turn 15. Publish dialog + item detail page are undesigned (out of scope §5) — minimal placeholders ship, flagged for later design |
+| 41 (Done!) | Gallery UI (Turn 15) + "Your videos": public `/gallery` grid (sort segmented control, "All books ▾", search, Load more, duration badges, rank badges incl. 🏆 #1, filled/outlined upvote pills, sign-in prompt for anon voters); minimal publish affordance + inline/modal playback via stream-url; "Your videos" from `GET /v1/renders?mine=1` | nextjs | 23, 39, 40 | Card/pill/badge components; sort/filter state; anon-vote prompt logic | **Stagehand** (real stack, seeded gallery): browse signed-out, switch sorts/filters, attempt vote → sign-in prompt; sign in → vote toggles pill + count | §5.3 row 9; Turn 15. **Citation corrected 2026-07-26**: the deferral authority is design-delta **§2.7** (the "still undesigned per Turn 15's try-next list" paragraph) and **§9-Q3**, *not* "§5" — §5 is "System architecture (target)" and contains no out-of-scope declaration. **And the deferral itself is now discharged**: Turns 16/17 designed all three screens; 16a's watch page (`/gallery/[id]`) is built; 16b's publish dialog is designed-and-unbuilt, so this row's minimal publish placeholders still ship. See design-delta §2.7.1 |
 | 42 | `cleanupOrphanedAssetsWorkflow`: statically-registered **scheduled** (daily) workflow deleting S3 objects of failed/canceled jobs past retention, **and purging expired `Session` rows (past `expiresAt`)** | dbos | 34, 36 | Retention-window selection (only failed/canceled, only past window); **expired-session selection (only rows past `expiresAt`, live sessions untouched)**; dry-run listing logic | Seed orphaned MinIO objects + job rows **and expired + live Session rows**, trigger the workflow directly: exactly the target objects deleted and **only expired sessions purged**, live assets and live sessions untouched | §7 workflow 10 (phase-2 candidate — may be deferred within M7 without blocking) |
 | 43 | Secrets/env boot hardening: all three services validate env at boot (`SECRETS_ENCRYPTION_KEY` length/presence, required provider vars, distinct-per-env expectations); redaction — secrets never logged | api, dbos, nextjs | 8, 12, 15 | Validator matrices per service; log-redaction unit checks (serializer never emits key material) | Compose e2e: service with a short/missing key refuses to boot with a clear error; healthy boot with valid env | §2.10; complements task 6 |
 | 44 | Prisma-pin CI enforcement everywhere: task-2 check wired into api + dbos CI (and postinstall), plus a red-path test proving a deliberate mismatch fails the build | db-lib, api, dbos | 2, 8, 15 | Check invocation wiring per consumer | CI-sim run: mismatched consumer pin → build fails; matched → passes (both repos) | §9-Q11; memory: prisma-exact-version-pin |
@@ -210,11 +210,31 @@ Mirroring design-delta §1's exclusions plus its flagged non-blocking future wor
   `supagloo-prompts`) — process tooling, not application scope.
 - **YouVersion sign-in changes** — sign-in itself stays as-is; this plan only
   adds the server-side session on top (tasks 10, 23).
-- **Gallery item detail/watch page**, the designed **"Share yours"
+- ~~**Gallery item detail/watch page**, the designed **"Share yours"
   publish-to-gallery dialog**, and a **creator profile page** — flagged
   undesigned by Turn 15 itself. Task 41 ships minimal placeholders (inline
   playback via stream-url; a basic publish form) explicitly marked for
-  replacement once those screens are designed.
+  replacement once those screens are designed.~~
+  **Restated 2026-07-26 — the "undesigned" premise expired.** Turns 16 and 17
+  designed all three, plus a fourth screen (17b, gallery empty + moderation
+  states). Current status, per design-delta §2.7.1:
+  - **Watch page — BUILT** (`/gallery/[id]`), so it is no longer out of scope.
+    `GalleryPlayerModal` was retired with it.
+  - **"Share yours" dialog (16b) — designed, still out of scope for now**, and
+    task 41's two publish placeholders (`share-yours-dialog.tsx` and the form
+    inside `your-videos-list.tsx`) still ship. *An implementation was in flight
+    when this was written; see design-delta §2.7.1's note before trusting the
+    "not built" status.*
+  - **Creator profile (17a) — designed, out of scope**, and blocked on data that
+    exists nowhere: `@handle`, location, bio, per-creator totals, a follow graph,
+    a per-creator listing endpoint.
+  - **17b's moderation cards — designed, out of scope, and contradictory**: they
+    presume an asynchronous review flow, whereas publish returns 201 with the
+    live item (§7). Only card 4a (the empty state) is buildable, and it is not
+    built.
+  - Also still unsurfaced: **`viewCount`** (designed in §2.7, exposed by no
+    endpoint) and the **`unlisted`** visibility choice at publish time (16b draws
+    no visibility control, so the UI's hard-coded `"public"` matches the design).
 - **Materialized trending score** — v1 computes trending at query time (§2.7);
   a stored score is a later optimization.
 - **Webhook (`callback_url`) delivery for OpenRouter video jobs** — polling is

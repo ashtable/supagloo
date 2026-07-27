@@ -294,9 +294,73 @@ Browsing is public/unauthenticated; **upvoting requires a session** (the
 unique constraint needs a real `userId` — anonymous visitors get a sign-in
 prompt).
 
-*Still undesigned, per Turn 15's own "try next" list — non-blocking future
+*~~Still undesigned, per Turn 15's own "try next" list — non-blocking future
 work, not blockers for this delta: the gallery item detail/watch page, the
-"Share yours" publish-to-gallery dialog, and a creator profile page.*
+"Share yours" publish-to-gallery dialog, and a creator profile page.~~*
+**AMENDED 2026-07-26 — all three are now DESIGNED; one is built.** The design
+author added **Turn 16** ("Watch page + share dialog — 16a: gallery video detail
+/ watch page · 16b: 'Share yours' publish-to-gallery dialog — both from 15a") and
+**Turn 17** ("Creator profile + gallery states — 17a: a creator's public profile ·
+17b: gallery empty state & moderation states — from 15a"). The two deferrals this
+paragraph recorded are therefore **discharged as deferrals** — the same treatment
+rows 63–68 got — and replaced by the build status in §2.7.1 below. A **new**
+deferral takes their place: 17a's creator profile and 17b's moderation states,
+which are designed and deliberately unbuilt.
+
+#### 2.7.1 Turn 16 / Turn 17 — the gallery follow-on screens, as built
+
+Recorded here because §2.7's paragraph above no longer describes reality.
+Transcription of record: `scratch/step4-claude-design-v2.md` (a second DesignSync
+pull on 2026-07-26; `list_files` returned a byte-identical path set, so the new
+turns are pure HTML wireframe markup inside `Supagloo Wireframes.dc.html`, and the
+`uploads/pasted-*.png` files are referenced by neither).
+
+| Option | Design author's own title | Status |
+|---|---|---|
+| **16a** | Watch page (gallery video detail) | **BUILT** — `/gallery/[id]` |
+| **16b** | "Share yours" publish-to-gallery dialog | **DESIGNED, NOT BUILT** |
+| **17a** | Creator profile | **DESIGNED, NOT BUILT** — and not buildable as drawn |
+| **17b** | Gallery empty + moderation states | **DESIGNED, NOT BUILT** — 3 of 4 cards contradict the shipped contract |
+
+*Build status is as of the 2026-07-26 doc pass. 16b's implementation was **in
+flight** when this table was written (red-first unit specs present, modules not
+yet); re-check `app/_components/gallery/publish-to-gallery-dialog.tsx` before
+relying on the "NOT BUILT" cell.*
+
+**16a was TRANSCRIBED, not invented.** This matters for precedence: it is not a
+hand-designed extension a later turn may freely overrule, it is an implementation
+of an existing wireframe, and a future turn that changes it is changing a designed
+screen. What shipped: a real route (the author's own word is "page", and it is
+drawn with a full frame and nav), a 9:16 portrait player, the creator line, the
+upvote pill, `↗ Share`, a **disabled** `⑂ Remix this` (drawn disabled, with the
+wireframe's own `title="Remixing is disabled"`), and the SCRIPTURE / HOW IT WAS
+MADE sections. `GalleryPlayerModal` was retired in the same pass — a card's ▶ now
+navigates — so there is exactly one playback surface, not two.
+
+Two elements 16a draws are **omitted rather than faked**, because no field backs
+them: `@maryk` (no handle column on `User`) and `🎬 Cosmic visuals` (no global
+visual-style field; the manifest has only per-scene `visualPrompt`). The verse
+text and the scene breakdown, which live in the creator's GitHub manifest rather
+than Postgres, are served from a **publish-time snapshot** —
+`GalleryItem.makingOf`, a `version: 1` jsonb column added in db-lib `525ae49` —
+so a watch page never depends on that repo still existing, and never issues a
+page-view manifest read.
+
+**17b's contradiction is recorded, not resolved.** Its `PENDING REVIEW` card says
+a new upload is *not* live ("we check every new upload against the community
+guidelines… you'll get an email when it's live"). The shipped system publishes
+immediately and synchronously: `POST /v1/renders/:id/gallery` returns **201 with
+the finished item** (§7), and `GalleryVisibility` is `public|unlisted` only. 17b
+is therefore a **feature request for a moderation subsystem** — review queue,
+appeals, reports, notification email — not a state that can be rendered against
+today's contract. Only its card 4a (`GALLERY · NO RESULTS`) is buildable, and it
+is not yet built.
+
+**Turn 16's own "try next" line**, verbatim: `"add a creator profile page (their
+public videos)" · "show the remix confirmation (fork into my workspace)" · "add a
+gallery empty/moderation state"`. **Turn 17's**: `"show the remix confirmation
+(fork into my workspace)" · "add a moderator review queue" · "design the follow
+feed"`.
 
 ### 2.8 `AiGeneration` — AI-generation requests/results
 
@@ -1428,9 +1492,19 @@ inline in §10, following Q10's "accepted risk, not resolved" pattern.)*
    a derived `scriptureBook` for the "All books" filter, and a new
    `GalleryUpvote` join entity (unique `(userId, galleryItemId)`); §3, §5.3,
    §6c, and §8 updated (sort/filter/search params + upvote endpoints).
-   Still undesigned per Turn 15's own "try next" list — future work, not
+   ~~Still undesigned per Turn 15's own "try next" list — future work, not
    blockers for this delta: the item detail/watch page, the "Share yours"
-   publish dialog, and a creator profile page.
+   publish dialog, and a creator profile page.~~
+
+   **AMENDED 2026-07-26.** All three are now designed — the author added
+   **Turn 16** (16a watch page, 16b "Share yours" dialog) and **Turn 17** (17a
+   creator profile, 17b empty + moderation states). This clause is therefore
+   discharged as a *deferral*; §2.7.1 carries the per-screen build status. Short
+   version: **16a is built** (`/gallery/[id]`, transcribed from the wireframe);
+   **16b, 17a and 17b are designed and not built**, and 17b's three moderation
+   cards contradict the shipped immediate-201 publish contract in §7. Turn 15
+   remains the authority for the grid itself (15a); nothing in Turns 16–17
+   changes it.
 4. **"Nothing is stored on our servers" vs S3 assets** (deviation flag).
    Generated media and rendered videos live in Supagloo's bucket; only
    composition *source* stays in the user's repo. The landing/workspace copy
