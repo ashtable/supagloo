@@ -77,14 +77,25 @@ was verified at — and if it names shas, they must equal root's gitlinks **righ
 a submodule pointer without re-running §2 and the gate goes red, which is the entire point.
 
 ```
-COMMITTED-CONFIG VERIFIED AT: not-yet
+COMMITTED-CONFIG VERIFIED AT: 43106f3d73a0afca348bf90ff5a5ad53d0f37b6d 03e7853577622fa42f6dff0a3393434e0f5e5407 c2abd4ab8c51f61a552af63dbf94f24a98ccfa7c
 ```
 
 To record a verified run, replace `not-yet` with the three shas, space-separated, e.g.
 `COMMITTED-CONFIG VERIFIED AT: <nextjs-sha> <api-sha> <dbos-sha>`, taken from
 `git ls-tree HEAD supagloo-nextjs supagloo-nodejs-api supagloo-nodejs-dbos`.
 
-**State at the time of writing (Step 11):** `not-yet`. Root's gitlinks are
+**State at the time of writing (Step 11):** `not-yet`. Root's gitlinks were
 `supagloo-nextjs 41d2416`, `supagloo-nodejs-api 4a6e4ec`, `supagloo-nodejs-dbos da194db`,
-all of which predate this run's work in those repos. Every e2e figure anyone quotes from
-root today was measured against the sibling checkouts.
+all of which predated this run's work in those repos. Every e2e figure anyone quoted from
+root at that moment had been measured against the sibling checkouts.
+
+**Verified 2026-07-27 (Step 13), rows 42/43/44/45/48/49/50.** The override was moved aside,
+`docker compose build --no-cache migrate api dbos nextjs` rebuilt all four images from the
+committed submodule contexts, `docker compose up -d` completed with `migrate` clean, and root's
+full e2e ran green: **5 files / 19 tests**, including all 8 `boot-hardening` cases individually
+confirmed to execute (E-BH1..E-BH8, real per-case timings 89ms–1097ms — not skipped).
+**E-BH8 passed**, so the committed nextjs image serves the container's runtime `YV_APP_KEY` with
+no build-time placeholder in the response; that is the case which fails if the nextjs gitlink
+predates work-order item 8. The `dbos` container reported the `maintenance` queue at
+`worker_concurrency=1`, confirming the committed context carries row 42's registry entry rather
+than a stale image.
