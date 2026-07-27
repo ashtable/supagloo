@@ -2,8 +2,11 @@
 
 *Generated 2026-07-17; wholesale refresh 2026-07-22; §5 rewritten wholesale
 2026-07-25 (design-delta §11 / plan task 62) with the §1/§2/§3/§4/§6 staleness it
-depended on. Describes the system AS IT EXISTS TODAY in the code, not the
-intended end state.*
+depended on; **gallery + DBOS-lane-isolation pass 2026-07-26** (plan rows 39/40/41
+shipped, so ten "the gallery does not exist" assertions were false; the api/dbos e2e
+lanes gained a per-lane DBOS system schema, closing the "stop the Compose `dbos`
+container" precondition). Describes the system AS IT EXISTS TODAY in the code, not
+the intended end state.*
 
 ## 1. Overview
 
@@ -15,10 +18,11 @@ DBOS durable-execution worker for long-running git-ops/AI jobs, and a shared
 Prisma/Zod database library — orchestrated locally via Docker Compose and
 deployed to Railway.
 
-**Maturity today: a real, working full-stack system through AI generation **and
-rendering**; the gallery is not built yet.** Per `docs/plan.md`'s task table,
-tasks 1–38 plus 57, 58 and 62 are done (milestones M1–M5 and M6's render half);
-the gallery (39–41) and everything from 42 on are not.
+**Maturity today: a real, working full-stack system through AI generation,
+rendering **and the public gallery**.** Per `docs/plan.md`'s task table, tasks 1–41
+plus 57, 58 and 62–68 are done — milestones M1–M6 in full. Everything from 42 on
+(M7: cleanup workflow, boot hardening, CI, load validation, api/dbos deploy,
+golden-path acceptance) is not.
 
 What is REAL and working end to end today:
 
@@ -33,7 +37,9 @@ What is REAL and working end to end today:
 - **API**: real auth/sessions (opaque DB-backed tokens, SHA-256 at rest),
   GitHub App / OpenRouter / Gloo connections (secrets encrypted at rest),
   projects/versions CRUD, manifest read, job creation + polling, S3 presigned
-  downloads, the 4 AI-generation endpoints, and the render endpoints.
+  downloads, the 4 AI-generation endpoints, the render endpoints, and the
+  **gallery endpoints** (publish / public listing with three sorts + book filter +
+  search + cursors / single-item detail / stream-url presign / upvotes / delete).
 - **DBOS worker**: all four git-ops workflows (scaffold / import / commit /
   publish — real clone/push/PR/merge/tag against **real github.com**), all four
   AI-generation workflows (script/storyboard, image, audio narration+music,
@@ -44,14 +50,18 @@ What is REAL and working end to end today:
   project wizards, studio hydration from the real manifest, the studio's
   AI-generation controls, commit, publish, version history, and the 14c render
   overlay are wired to the real backend (a flag-gated mock mode remains for
-  pure-UI tests).
+  pure-UI tests). The **public `/gallery` grid**, the **`/gallery/[id]` watch
+  page** and **"Your videos"** are wired to the real gallery endpoints.
 - **Testing**: every e2e lane in every repo runs against the **real** providers —
   YouVersion, Gloo, OpenRouter **and GitHub**. There are no provider stubs left
-  (§5).
+  (§5). Since 2026-07-26 the fourteen e2e lanes that boot an in-process DBOS
+  runtime each own a **per-lane DBOS system schema**, so they no longer require
+  the Compose `dbos` container to be stopped (§5.4 item 9).
 
-What is genuinely NOT built yet (see §6): the gallery, the cleanup workflow,
-prod deploy wiring for api/dbos, CI of any kind, and a set of
-code-review-surfaced hardening follow-ups.
+What is genuinely NOT built yet (see §6): the cleanup workflow, prod deploy
+wiring for api/dbos, CI of any kind, a set of code-review-surfaced hardening
+follow-ups, and two *designed but deliberately out-of-scope* gallery screens
+(Turn 17a's creator profile and Turn 17b's three moderation states).
 
 ## 2. Repo Inventory
 
@@ -75,7 +85,12 @@ code-review-surfaced hardening follow-ups.
   api and dbos repos, which consume it as a `file:` dependency.)
 - `docker-compose.yml` defines **seven services**:
   - `postgres` (postgres:17-alpine) — `infra/pg-init` creates both logical
-    DBs: `supagloo` (app) and `supagloo_dbos` (DBOS system).
+    DBs: `supagloo` (app) and `supagloo_dbos` (DBOS system). **Still exactly
+    two, verified 2026-07-26**: the e2e lane isolation added that day works by
+    SCHEMA (`dbos_e2e_*` siblings of `dbos`) *inside* `supagloo_dbos`, precisely
+    so this sentence stays true — `psql -c "select datname from pg_database"`
+    returns `postgres, supagloo, supagloo_dbos, template0, template1` and no
+    third database was created (§5.4 item 9).
   - `minio` + one-shot `minio-init` (creates the `supagloo-dev` bucket).
   - one-shot `migrate` — runs `prisma migrate deploy` from the api image
     (db-lib's schema/migrations ship inside it); `api` and `dbos` wait on it.
@@ -119,7 +134,13 @@ Consumed as a nested submodule + `file:` dependency by api and dbos.
   the exported `PRISMA_VERSION` pin + `check-prisma-version` CLI (consumers
   must pin the exact Prisma version; CI enforcement itself is task 44, not
   done).
-- No render/gallery-specific logic yet beyond the schema rows.
+- **Gallery logic now exists beyond the schema rows**: `GalleryItemSchema` /
+  `PublishGalleryItemRequestSchema` / the listing + cursor DTOs, the
+  `scriptureBook` derivation contract, and (since `525ae49`, released as
+  `f608951` on 2026-07-26) **`GalleryItem.makingOf`** — a `jsonb` publish-time
+  manifest snapshot with a `version: 1` literal in `GalleryMakingOfSchema`, plus
+  the `GalleryItemDetailDto` the watch page reads. Both api and nextjs carry
+  committed pin bumps to `f608951` (`a360c07`, `2d6f5ae`).
 
 ### 2.4 `supagloo-nextjs` — Next.js UI + BFF (wired to the real backend)
 
@@ -132,7 +153,13 @@ only), `@youversion/platform-react-ui` (real YouVersion OAuth sign-in).
 session cookie), a generic bearer-forwarding proxy to the API, `me`,
 `connections`, `connect/{github,openrouter,gloo}` (+ callbacks), `github`
 (repo listing), `projects` (create / create-repo JIT user-auth hop / import /
-`[id]` manifest·commit·publish·jobs·versions), and a double-gated `test` seam.
+`[id]` manifest·commit·publish·jobs·versions), `renders` (`[id]`, `[id]/cancel`,
+`[id]/download`, `[id]/gallery`), `ai/generations`, `files/presign-download`,
+the **gallery** group (`gallery`, `gallery/[id]`, `gallery/[id]/stream-url`,
+`gallery/[id]/upvote`), and a double-gated `test` seam. `GET /api/gallery/[id]`
+was deliberately absent while no detail page existed; Turn 16a's watch page is
+that page, so the handler was re-added on 2026-07-26 — the original comment
+named its own reversal condition.
 
 **Flows wired to the real stack**: sign-in → server session (no more
 client-only session; onboarding state is server-driven, `localStorage` flag
@@ -152,7 +179,26 @@ visual, narrator/music) call `POST /v1/ai/generations` and poll (task 35); the
 output spec, with cancel, "run in background" and a presigned download link (task
 38) — the fake frame-ticker is gone.
 
-**Still not wired in the UI**: there is no gallery UI (task 41). A flag-gated
+**Gallery UI (rows 39–41, plus the 2026-07-26 Turn-16a pass)**: the public,
+unauthenticated `/gallery` grid (segmented Most-popular/Newest/Trending sort,
+"All books ▾", search, Load more, duration + rank badges, filled/outlined upvote
+pills, a sign-in prompt for anonymous voters), `/your-videos` from
+`GET /v1/renders?mine=1` with a publish form, and — new on 2026-07-26 —
+**`/gallery/[id]`, the watch page**: a server shell with data-driven
+`generateMetadata` (no `openGraph.images`, because every image URL here is a
+short-lived presign) hosting a mount-gated client island of
+`watch-player`/`watch-details`. It renders the 9:16 player, the creator line, the
+upvote pill, `↗ Share`, a **disabled** `⑂ Remix this`, and the SCRIPTURE / HOW IT
+WAS MADE sections off `GalleryItemDetailDto.makingOf`. `GalleryPlayerModal` was
+**deleted** — a card's ▶ now navigates to the page.
+
+Turn **16b**'s real publish dialog is wired too —
+`app/_components/gallery/publish-to-gallery-dialog.tsx`, ONE dialog behind a
+PROJECT picker, which **deleted** both placeholders (`share-yours-dialog.tsx`
+and the inline form in `your-videos-list.tsx`) — as is Turn **17b**'s card 4a,
+the `GALLERY · NO RESULTS` empty state. **Still not wired in the UI**: Turn 17a's
+creator profile and Turn 17b's other three (moderation) states, both out of scope
+by explicit decision — §6. A flag-gated
 mock mode (`NEXT_PUBLIC_SUPAGLOO_DEMO` + `?mock=`) keeps the original all-client
 demo behavior for pure-UI regression specs — including a mock render ticker —
 while real-stack Stagehand specs use the extended `?seed=` seam instead (§5).
@@ -192,6 +238,18 @@ loader; consumes db-lib via nested submodule + `file:` dep. Routes (all under
 - **Renders**: `POST /v1/projects/:id/renders` (versionId, output spec,
   `runInBackground` as a UI hint), `GET /v1/renders/:id`, `POST /:id/cancel`,
   `GET /v1/renders?mine=1`, `GET /:id/download` (presigned).
+- **Gallery** (rows 39/40, extended 2026-07-26): `POST /v1/renders/:id/gallery`
+  (owner-only publish — plain CRUD returning **201 with the live item**,
+  deliberately not a workflow), `DELETE /v1/gallery/:id`, public
+  `GET /v1/gallery?sort=popular|newest|trending&book=&q=&cursor=`,
+  `GET /v1/gallery/:id` (`optionalAuth`; now returns `GalleryItemDetailDto` —
+  the card DTO widened by `makingOf` and `owner.publicVideoCount`),
+  `GET /v1/gallery/:id/stream-url` (short-TTL presign), and
+  `POST|DELETE /v1/gallery/:id/upvote` (authed). The publish path builds the
+  `makingOf` snapshot from the project manifest at publish time
+  (`src/gallery/making-of.ts`) — a **snapshot**, not a page-view manifest read,
+  so a watch page never depends on the creator's GitHub repo still existing.
+  `viewCount` is persisted but surfaced by **no** endpoint (§6).
 
 The API never runs the DBOS runtime — it enqueues via `DBOSClient`
 (`workflowID` = domain-record id, e.g. jobId) against `DBOS_DATABASE_URL`.
@@ -206,6 +264,14 @@ submodule). Statically-registered workflows only (registered before
 `DBOS.launch()`; queues `git-ops`, `ai-generation`, `render` declared in a
 single `registry.ts` source of truth). Two DBs: app rows via `DATABASE_URL`,
 checkpoints/queues in `supagloo_dbos` via `DBOS_DATABASE_URL`. No HTTP surface.
+**Still two — confirmed 2026-07-26.** `DBOS.setConfig` now also forwards an
+optional `systemDatabaseSchemaName` from `DBOS_SYSTEM_DATABASE_SCHEMA`
+(`src/dbos/runtime.ts`), which selects a SCHEMA *inside* `supagloo_dbos`. The key
+is **unset in every Compose file**, so the SDK default `"dbos"` is the shipped
+configuration and behaviour is byte-identical to before; it exists for the
+single-database deployment fallback design-delta §4/§9-Q7b already contemplates,
+and the e2e lanes pass a per-lane value explicitly (§5.4 item 9). It is a
+production configuration key, not a test hook — see §5.3.
 
 - **Git-ops workflows** (all start by minting a short-lived installation
   token; all stage-writes idempotent under replay):
@@ -442,11 +508,30 @@ authorization): a spec may shim *only that hop*, and everything after it is real
 - **api e2e**: real HTTP against a running API + Compose Postgres/MinIO, with
   **all** provider egress at the real hosts (OpenRouter, Gloo, YouVersion,
   github.com / api.github.com).
+
+  **Four of these specs boot a DBOS runtime in-process, and this is the fact
+  that most surprises a reader.** `renders.e2e.ts`, `ai-generations.e2e.ts`,
+  `project-jobs.e2e.ts` and `repo-provisioning.e2e.ts` each call `DBOS.launch()`
+  inside the test process and register a **STAND-IN** workflow — a fast local
+  function — under the **REAL production workflow name** on the **REAL
+  production queue** (`renderWorkflow` on `render`, the generate-* workflows on
+  `ai-generation`, `scaffoldProjectWorkflow` on `git-ops`, …). That is
+  deliberate, and it is the point: exercising the real API↔DBOS
+  name/queue/`workflowID` contract from db-lib's registry is exactly what these
+  specs exist to prove, and a real render or a real clone here would add ~10
+  minutes for zero new information. Static registration and the one frozen
+  `registry.ts` are a hard constraint (§2.6), so runtime-invented queue or
+  workflow names are not an option. The consequence — a second executor polling
+  the same queues under the same names — is what §5.4 item 9 handles.
 - **dbos e2e**: real `DBOSClient` enqueue (workflowID = record id) to completion
   against the real system DB + app DB + MinIO, including crash/replay tests (kill
   or cancel the worker mid-workflow, resume, assert no duplicated side effects —
   verified by DBOS system-DB step-execution counts **plus** real-host artifact
-  reads; see §5.4). The heavy render spec is a separate `test:e2e:render` lane.
+  reads; see §5.4). All ten specs run their own in-process runtime under the real
+  registry names, so they carry the same coupling as the api four — and worse
+  before the fix, since an in-process worker's auto-computed application version
+  *matches* the container's, leaving nothing to tell the two apart. The heavy
+  render spec is a separate `test:e2e:render` lane.
 - **nextjs UI e2e**: Stagehand v3 (browser AI testing; its own LLM is Gloo via
   client-credentials), split into **three lanes** with a unit guard asserting
   every spec belongs to exactly one:
@@ -527,7 +612,36 @@ the one place that adds any back, and it adds exactly two lines to the api servi
 (§8, the OAuth public/internal split); it is called out here rather than left to be
 rediscovered as drift.
 
-Two permanent unit guards keep it that way: an inverted overlay test asserting
+**`DBOS_SYSTEM_DATABASE_SCHEMA` (added 2026-07-26) is named here under the same
+convention, and it is NOT a test-side override.** It is an optional key on *both*
+`supagloo-nodejs-api/src/config/env.ts` and `supagloo-nodejs-dbos/src/config/env.ts`
+(identical zod shape: a lowercase Postgres identifier, `.optional()`), read by
+production code from production env exactly as `DBOS_DATABASE_URL` is, and handed
+to the SDK's own real config key `systemDatabaseSchemaName` — on the api's
+`DBOSClient.create` path via `makeDbosEnqueuer`, and on the worker's
+`DBOS.setConfig` path via `launchDbos`. Three properties are what make it
+configuration rather than a test hook:
+
+- it mirrors a first-class SDK config key that exists for a real deployment shape
+  — the single-Postgres-database fallback in design-delta §4/§9-Q7b, where DBOS's
+  schema-level isolation stands in for the two-logical-database topology;
+- **no spec reads it.** The e2e lanes do not set the env var; they pass their
+  per-lane schema **explicitly at the call site** (§5.4 item 9). Deleting the env
+  key would not change a single test's behaviour;
+- it is **unset in every Compose file**, so the SDK default `"dbos"` is the
+  shipped configuration and today's runtime behaviour is byte-identical to before
+  the key existed (`translateDbosConfig` resolves `undefined` → `"dbos"`).
+
+The one operational rule it carries: **api and dbos must carry the same value, or
+neither.** A schema set on one side only would leave the api enqueueing into a
+namespace the worker never polls — silent, total breakage. That pairing is now
+**machine-enforced in the root repo**: `tests/unit/compose-config.test.ts`
+"PART V invariant 6" asserts per-file api/dbos parity, MERGED-stack parity, and
+that the key is unset everywhere today; `tests/unit/compose-test-overlay.test.ts`
+asserts the test overlay sets it on **no** service.
+
+Back to the provider base URLs: two permanent unit guards keep *those*
+real-by-default — an inverted overlay test asserting
 `docker-compose.test.yml` defines no stub service and — over **every** `GITHUB_*`
 key present, not a fixed forbidden list — no GitHub variable beyond the two row-66
 exceptions it names explicitly, plus positive assertions that the internal base is
@@ -662,14 +776,157 @@ These are load-bearing properties of today's test suite:
    `gotoStudio` copies and the three latent fixed-sleep sites in
    `studio.e2e.ts`. The standing rule it encodes: **wait on a mount-gated testid
    or an explicit hydration predicate, never on an SSR'd one.**
+9. **Fourteen e2e lanes are isolated by a per-lane DBOS system SCHEMA, and that
+   config is load-bearing.** Because the api's four specs and the dbos repo's ten
+   specs all register stand-in workflows under the REAL shared names on the REAL
+   shared queues (§5.1), and because the api enqueues with **no** `appVersion` —
+   so every row lands `application_version = NULL`, and the SDK's dequeue
+   predicate is `status = $1 AND queue_name = $2 AND (application_version IS NULL
+   OR application_version = $3)` — a NULL-version row is dequeuable by *any*
+   executor polling that queue. With the Compose `dbos` container up, the real
+   containerised worker raced the in-process stand-in and usually won.
+
+   The fix is the SDK's own **`systemDatabaseSchemaName`**, pointing each lane's
+   runtime *and* enqueuer at a private schema inside the same `supagloo_dbos`
+   database. The two executors then read and write disjoint `workflow_status`
+   tables and cannot see each other's rows **in either direction**. Specifics a
+   future reader needs:
+
+   - Schemas are `dbos_e2e_<lane>`. The literal prefix **`dbos_e2e_`** has
+     exactly one authored home per repo — `LANE_SCHEMA_PREFIX` in
+     `src/testing/dbos-lane-isolation.ts` — alongside `DBOS_DEFAULT_SYSTEM_SCHEMA
+     = "dbos"`, pinned so an SDK bump that changes the default fails a unit test
+     instead of silently re-coupling. The api and dbos copies of that module are
+     **deliberate duplicates, not drift**: routing them through the root checkout
+     would make specs that need no root checkout today depend on one, and the two
+     repos must not share a lane schema regardless.
+   - The 14 lanes: **api** — `dbos_e2e_api_render`, `dbos_e2e_api_ai`,
+     `dbos_e2e_api_jobs`, `dbos_e2e_api_repo_prov`; **dbos** —
+     `dbos_e2e_dbos_noop`, `_dbos_commit`, `_dbos_publish`, `_dbos_import`,
+     `_dbos_scaffold`, `_dbos_script`, `_dbos_image`, `_dbos_audio`,
+     `_dbos_video`, `_dbos_render`. All 14 verified present as siblings of `dbos`
+     inside `supagloo_dbos`.
+   - **`SUPAGLOO_DBOS_E2E_SCHEMA_SUFFIX`** is the escape hatch for genuinely
+     parallel runs (two CI jobs, one Postgres). Unset by default, because
+     `fileParallelism: false` means specs within a repo never overlap. A name that
+     would exceed 63 bytes is **rejected**, not truncated — Postgres truncates
+     silently, which would re-share a schema between two lanes without saying so.
+   - The schema self-provisions (`CREATE SCHEMA IF NOT EXISTS` is the SDK's first
+     system migration), so no Compose or Postgres change was needed.
+   - Isolation is asserted **positively**, never skipped around: each lane throws
+     unless its schema differs from `"dbos"`, `"<schema>".workflow_status` exists
+     after launch, and `"<schema>".queues` exists and is non-empty. Note the
+     table: `queues` is the SDK's REGISTERED-queue table (written by
+     `registerQueue`); `workflow_queue` holds *enqueued workflows* and is
+     legitimately empty at `beforeAll`, so asserting on it would fail always.
+     A second assertion folds into each lane's first real enqueue and proves the
+     row exists once in the lane schema and **zero** times in shared `dbos`.
+   - What was deliberately **not** done, and why: not `appVersion` pinning (the
+     `IS NULL` disjunction means a pinned stand-in would still steal real
+     NULL-versioned enqueues — worse than the bug); not a third database (it would
+     falsify §2.2's two-logical-database sentence); not runtime-constructed
+     queue/workflow names (static registration is a hard constraint and the real
+     shared names are the point); not a conditional skip or warn (a lane must
+     never mark itself optional — design-delta §10.9/§11.9).
+10. ~~**The api and dbos e2e lanes require the root Compose `dbos` container to be
+    stopped**~~ — **CLOSED 2026-07-26 by item 9.** The precondition was recorded
+    only in spec header comments, never here, and it was **never satisfiable
+    across a full sweep**: the root repo's own e2e lane and the nextjs render lane
+    both bring `dbos` **UP** and deliberately leave it up. It reproduced live on
+    the day it was fixed — `renders.e2e.ts` failed 3 of 7 with the container
+    running (E-R2 got `failed` instead of `completed`; E-R4/E-R6 never reached
+    `completed` within 25 s) because the containerised worker dequeued the
+    stand-in's render workflow and failed to clone a fixture repo that exists only
+    in the test's imagination. Both states now pass: the api's four specs are
+    green **with the container up** (36/36) and with it stopped.
+
+    **Honest residual, recorded rather than smoothed over.** The
+    container-stopped proof for the *full* dbos e2e lane is not clean: two runs
+    each ended `3 failed | 39 passed (42)`. None of the three is isolation-related
+    — two are `ProviderHttpError: speech failed: 402` in `generate-audio` (the
+    external TTS provider is out of credit, reproduced identically with the
+    container UP while that spec's own isolation assertion passes) and one is a
+    90 s timeout in `scaffold-project`'s real-GitHub happy path. The stopped half
+    was therefore satisfied with a clean subset (noop + commit-version +
+    scaffold-project, 12/12) plus the clean api run. The container was never
+    stopped to make a test pass.
 
 ## 6. Gaps / Not Yet Implemented
 
-Per `docs/plan.md` (tasks 39–56 and 59–61 not done; **63–68 are now DONE** — see
-the closed-out entry at the end of this list):
+Per `docs/plan.md` (tasks 42–56 and 59–61 not done; **39–41 and 63–68 are now
+DONE** — see the closed-out entries at the end of this list):
 
-- **Gallery (39–41).** No gallery endpoints, upvotes, or UI; `GalleryItem` /
-  `GalleryUpvote` exist only as schema rows.
+- **The Turn 16/17 gallery screens (2026-07-26).** Turn 15's "try next" list
+  flagged three follow-on screens; Turns **16** and **17** (added by the design
+  author on 2026-07-26) **designed all three**, plus a fourth (17b). Three of the
+  four surfaces are now built; the remaining two are out of scope by explicit
+  decision, not merely unscheduled. Precisely:
+  - **16a — watch page: BUILT** (`/gallery/[id]`, §2.4). Transcribed from the
+    wireframe, not invented.
+  - **16b — the "Share yours" publish-to-gallery dialog: BUILT**
+    (`app/_components/gallery/publish-to-gallery-dialog.tsx`), ONE dialog behind a
+    PROJECT picker. It **deleted** both placeholders it replaces —
+    `app/_components/gallery/share-yours-dialog.tsx` (the 440px modal that just
+    sent you to `/your-videos`) and the second publish surface inside
+    `app/_components/your-videos/your-videos-list.tsx`.
+
+    > *Corrected at release, 2026-07-26.* This bullet previously read
+    > `DESIGNED, NOT BUILT` with a "verify before trusting it" hedge, because at
+    > the time of the doc pass `lib/gallery/publish-options.test.ts` and
+    > `tests/unit/publish-to-gallery-dialog.test.tsx` existed and were **red**
+    > (red-first TDD, modules not yet written) — which is also why the nextjs unit
+    > lane then reported `2 failed | 52 passed` file-level while all 746 collected
+    > tests passed. The hedge did its job: 16b landed, the lane is clean at
+    > 789/789, and the bullet is now settled rather than provisional.
+  - **17a — creator profile: DESIGNED, OUT OF SCOPE** by explicit decision, and
+    not buildable as drawn. It needs a `@handle`, a location, a bio, per-creator
+    totals, a follow graph and a per-creator listing endpoint; none of those exist
+    at any layer.
+  - **17b — gallery empty + moderation states: card 4a BUILT, the other three
+    DESIGNED and OUT OF SCOPE** by explicit decision — and those three
+    **contradict the shipped system**. `PENDING REVIEW`, `REMOVED FROM GALLERY`
+    and `REPORT THIS VIDEO` assert a moderation subsystem (review queue, appeals,
+    reports, email-on-approval) that exists in no schema, no endpoint and no plan
+    row, and they presume publish is asynchronous when
+    `POST /v1/renders/:id/gallery` returns **201 with the live item**
+    (design-delta §7). `GalleryVisibility` is `public|unlisted` only — there is
+    no `in_review`/`removed` state to render, so building them is a product
+    decision about whether publishing stops being immediate. Card **4a**, the
+    `GALLERY · NO RESULTS` empty state, was the only one buildable against
+    today's contract and it **shipped** in `gallery-grid.tsx`.
+- **Named data gaps the built watch page renders around** (it omits rather than
+  invents, which is why they are gaps and not bugs): no `@handle` column anywhere
+  on `User`, so the design's `@maryk` ships as `displayName`; no global
+  visual-style field, so `🎬 Cosmic visuals` is omitted (the manifest carries only
+  per-scene `visualPrompt`); no cover-frame selection at any layer
+  (`thumbnailAssetKey` is server-recomputed and never client-supplied); and
+  nothing enumerates valid translations (`TranslationSchema` is
+  `z.string().min(1)`, and §9-Q10 forbids hardcoding bible ids).
+- **`viewCount` is surfaced by no endpoint.** The column exists on `GalleryItem`
+  and design-delta §2.7 designs it; §8 exposes it nowhere and the DTO omits it on
+  purpose. The watch page is its natural home, but adding a write path is new API
+  design that was explicitly kept out of the 2026-07-26 cycle. Recorded as
+  still-unsurfaced rather than quietly built.
+- **`unlisted` is still not choosable at publish time.** The enum is two-valued
+  and the api honours both, but the publish UI hard-codes `"public"` — and the
+  design agrees: 16b draws no visibility control. `/gallery/[id]` is the first
+  surface on which "unlisted, reachable by id" means anything.
+- ~~**`supagloo-nodejs-dbos` is UNRELEASED, and the release is no longer a pure
+  pin bump.**~~ **RELEASED 2026-07-26** (PR #36, merge `da194db`; next branch
+  `v0.0.35`). Recorded here because the release was *not* a pure pin bump and the
+  four-part checklist this bullet demanded is what was actually executed: branch
+  `v0.0.34`'s two db-lib pin bumps (`971c3e7` → `0688ec6`, `1001bd8` → `f608951`)
+  merged **together with** the product code — the optional
+  `DBOS_SYSTEM_DATABASE_SCHEMA` key in `src/config/env.ts` and the
+  `systemDatabaseSchemaName` passthrough in `src/dbos/runtime.ts` — root's
+  submodule pointer bumped *and* its checkout fast-forwarded, the Dockerfile's
+  `ARG DATABASE_LIB_REF` verified in lockstep with the db-lib pointer at
+  `f608951` (in **both** api and dbos), and the `dbos` image rebuilt, since a
+  pin-bump-only release would have shipped a worker binary without the
+  passthrough. Behaviour remains byte-identical while the key is unset
+  (`translateDbosConfig` resolves `undefined` → `"dbos"`). The api's mirror-image
+  change shipped in the same sweep (PR #41, merge `4a6e4ec`; next branch
+  `v0.0.40`).
 - **Cleanup workflow (42).** No scheduled orphaned-asset / expired-session
   purge.
 - **Ops/hardening (43–47).** Boot-time env hardening incomplete; Prisma-pin
@@ -713,6 +970,14 @@ the closed-out entry at the end of this list):
     reclamation path is therefore demonstrated, not just documented.
   - **68 — CLOSED.** The nextjs mock-lane flake was one bug, not two: a shared
     hydration gate replaced waiting on an SSR'd testid.
+- ~~**Gallery (39–41)**~~ — **ALL THREE CLOSED** (commits `d319046`/`ed36fb9` in
+  the api, `e1ea979`/`d1071c4` in nextjs). Publish, the public listing with three
+  sorts, book filter, search and cursors, `GET /v1/gallery/:id`, the short-TTL
+  stream-url presign, transactional upvotes, the `/gallery` grid, "Your videos",
+  and — added 2026-07-26 — the `/gallery/[id]` watch page and its `makingOf`
+  snapshot. Listed here only so a reader arriving from an older revision of §1 or
+  §2.4 is not left believing the gallery is unbuilt. What *remains* open is the
+  screen list at the top of this section, not the feature.
 - **Live-provider verification.** The remaining gaps are narrow and named: the
   invented YouVersion sign-in contract (plan row 56 item 1) and the video
   `Idempotency-Key` assumption (design-delta §10.5's accepted risk). Everything

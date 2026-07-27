@@ -103,3 +103,30 @@ approval of that plan:
 Resolved sign-off item from plan §6: `mintInstallationToken` lives in
 `database-lib` (shared), not duplicated per service. See
 [[github-app-installation-tokens]] and [[github-app-pem-normalization]].
+
+## A RUNNING `supagloo-dbos-1` USED TO SILENTLY FAIL THREE api e2e FILES — **FIXED 2026-07-26**
+
+**Do not chase this any more, and never "fix" it by stopping the container.** See
+[[dbos-e2e-lane-schema-isolation]] for the mechanism that closed it. History kept because the
+symptom table is still the fastest way to recognise a *regression* of the fix.
+
+Diagnosed and fixed the same day. The api e2e lane's DBOS-touching specs register an **in-process
+stand-in workflow under the real shared workflow name on the real queue**, and used to assume an
+idle Compose `dbos` service. Two things were wrong with that assumption: it was **unsatisfiable**
+across a full sweep (root's own e2e lane and nextjs's render lane both bring `dbos` up on purpose),
+and `project-jobs.e2e.ts`'s stated justification for it — that global-setup did not start the
+service — was **false at the time it was written** (root `tests/e2e/global-setup.ts` starts `dbos`).
+A running container is a **competing consumer**: it grabs the enqueued workflow first, runs the REAL
+workflow against fixtures never provisioned for it, and fails it. The stand-in never sees the work.
+
+Symptom table — now the signature of a REGRESSION of the schema-isolation fix, not of an
+un-stopped container:
+
+| Spec | Visible failure | Container log |
+|---|---|---|
+| `renders.e2e.ts` | `render <id> did not reach completed within 25000ms (last=failed)` | `RenderRequestInvalidError: project owner … has no GitHub installation — cannot clone`; `installation token exchange failed for installation 42: 404` |
+| `ai-generations.e2e.ts` | same poll timeout, `last=failed` | `OpenRouterNotConnectedError: no OpenRouter connection for user …` |
+| `project-jobs.e2e.ts` | flaky poll timeout | same family |
+
+If you see that table today, the lane's `systemDatabaseSchemaName` wiring has been dropped — and
+the `assert*` probes should have caught it first and named the remedy.

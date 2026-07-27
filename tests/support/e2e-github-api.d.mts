@@ -136,6 +136,10 @@ export function createFixtureRepo(
     slug: string;
     runId?: string;
     spec?: string;
+    /** Row 63's additive opt-out for the deliberately COMMIT-LESS fixture. Defaults to
+     *  `true`, which is load-bearing for every other lane — see D6. Pair `false` with
+     *  `waitForRepoReady({ requireBranch: false })`. */
+    autoInit?: boolean;
   },
 ): Promise<any>;
 
@@ -146,6 +150,9 @@ export function waitForRepoReady(
     owner: string;
     repo: string;
     branch?: string;
+    /** `false` waits on the repo RECORD only — the commit-less fixture has no branch for
+     *  the default gate to observe, so it would burn the whole budget and throw. */
+    requireBranch?: boolean;
     timeoutMs?: number;
     nowImpl?: () => number;
   },

@@ -20,6 +20,28 @@ resolves the "Gallery screen not yet designed" gap noted in the original pass. A
 truncation point had moved slightly earlier (now mid-Turn-4) to make room for Turn 15's content; this
 doesn't affect anything in the originally-requested 7–14 range, which remains fully captured.
 
+**Update (2026-07-26): Turn 15 is NO LONGER the newest turn.** The author added **Turn 16** and
+**Turn 17** — four new options — during the "kill the Compose-dbos e2e precondition · design the two
+gallery follow-on screens" cycle. Turn order in the doc, newest-first, is now
+`t17, t16, t15, t14, t13, t12, t11, t10, t9, t8, t7, t6`.
+
+Two process notes that a later reader will need:
+
+- **This was verified twice, and the first answer was wrong.** An earlier pull the same day
+  (`scratch/step4-claude-design-fix-release.md`) concluded "NO DESIGN EXISTS" and that t15 was still
+  newest; the author appears to have added t16/t17 in the interval. **`scratch/step4-claude-design-fix-release.md`
+  §0 is SUPERSEDED wherever it is cited** — its §1, §2 (design-system constraints) and §4 remain
+  valid; only its NO-DESIGN-EXISTS verdict and its §3/§5 are stale. The current transcription of
+  record is `scratch/step4-claude-design-v2.md`, independently re-verified against `DesignSync
+  get_file` while this document was being updated (turn ids, option labels and both "try next" lines
+  match byte-for-byte).
+- **`list_files` returned a byte-identical path set**, and the four `uploads/pasted-*.png` files are
+  referenced by neither new turn (0 hits). The new turns are therefore pure HTML wireframe markup
+  inside `Supagloo Wireframes.dc.html`, which is the authority.
+- **Turns 16 and 17 say nothing about infrastructure.** Grep over the retrieved document: `dbos` 0,
+  `docker` 0, `compose` 0, `submodule` 0, `queue` 0, `container` 0, `e2e` 0. The one standing
+  "don't break it" note still holds: 14c's render-stage vocabulary is user-visible.
+
 Each numbered "turn" in the doc is one prompt/response round in the design conversation; each turn
 contains one or more lettered "options" (e.g. `14a`, `14b`, `14c`) which are alternative or complementary
 screens/components explored in that round. Options frequently cross-reference each other (e.g. "opens
@@ -43,6 +65,99 @@ Primary CTA gradient: `linear-gradient(150deg,#d4a24c,#c0392b 55%,#6d3b26)` (gol
 on every primary button throughout the app. Logo mark is a simple cross glyph in a rounded-square badge
 with that gradient. App chrome (studio/editor) is a "mono skin" — near-black/near-white surfaces with the
 same red/gold accent used sparingly for active states, live indicators, and primary actions.
+
+---
+
+## Turn 17 — Creator profile + gallery states (id `t17`)
+
+*Added 2026-07-26. Author's own turn title: "Creator profile + gallery states — 17a: a creator's
+public profile · 17b: gallery empty state & moderation states — from 15a". **Neither option is
+built.***
+
+**17a — Creator profile.** The third screen from Turn 15's try-next list. A creator's public page:
+avatar, display name, **`@handle`**, location, bio, aggregate counts (videos / total upvotes / total
+remixes), a follow control, and a grid of that creator's public videos.
+
+> **Not buildable as drawn, and that is a data gap, not a design objection.** Nothing in the schema
+> supplies a handle, a location, a bio, per-creator totals, a follow graph, or a per-creator listing
+> endpoint. `User` has no `@handle` column at all — which is also why 16a's `@maryk` ships as a plain
+> display name (the API records the same gap at `supagloo-nodejs-api/src/gallery/dto.ts`).
+
+**17b — Empty & moderation states.** Four cards:
+
+- **4a `GALLERY · NO RESULTS`** (560px) — the empty state, offering `Clear filters` and
+  `＋ Create this verse`. **The only piece of Turn 17 that is buildable against today's contract**;
+  it replaces the placeholder empty state in `gallery-grid.tsx` and needs no new data. Note it draws
+  **no error state**, so the existing retry affordance has no counterpart in the design and should be
+  kept regardless.
+- **4b `PENDING REVIEW`** (400px), **4c `REMOVED FROM GALLERY`** (400px), **4d `REPORT THIS VIDEO`**
+  (280px popover).
+
+> **4b–4d contradict the shipped system and must not be half-built.** 4b tells the creator a new
+> upload is *not yet live* ("usually under an hour — you'll get an email when it's live"), but
+> `POST /v1/renders/:id/gallery` publishes synchronously and returns **201 with the finished item**,
+> and `GalleryVisibility` is `public|unlisted` only. There is no moderation status enum, no removal
+> reason or appeal, no withdraw/edit-pending endpoints, no report endpoint, and no notification
+> email — anywhere. Taken together these three cards are a **feature request for a moderation
+> subsystem**, not renderable states. Recorded in design-delta §2.7.1.
+
+**Turn 17's own "try next" line**, verbatim: `"show the remix confirmation (fork into my
+workspace)" · "add a moderator review queue" · "design the follow feed"`.
+
+---
+
+## Turn 16 — Watch page + share dialog (id `t16`)
+
+*Added 2026-07-26. Author's own turn title: "Watch page + share dialog — 16a: gallery video detail /
+watch page · 16b: 'Share yours' publish-to-gallery dialog — both from 15a". This turn resolves the
+first two of the three sub-gaps Turn 15 flagged.*
+
+Turn 16 is a **1-to-1 pair**, one screen each — not an a/b variant pair, not two states of one
+screen, not two viewports, and not step 1 / step 2.
+
+**16a — Watch page. BUILT** as `/gallery/[id]` (see design-delta §2.7.1). Author's caption: *"opening
+a gallery card: the 9:16 player, creator + upvote, the verse text, the scene breakdown that made it,
+and 'Remix this'."*
+
+- **Nav:** deliberately **stripped** — a `‹ Gallery` back link, the centred wordmark, and the user
+  pill. No Workspace / Gallery / How-it-works links. (It also silently changes the badge 34→30px, its
+  radius 9→8 and the wordmark 20→18px; whether that is intent or drift is unknowable from the markup.)
+- **Left column:** a **9:16 portrait** player with an inline caption line over the frame, a scrub bar
+  reading `0:12 / 0:32`, and mute + fullscreen controls. Every playback artefact in the design is a
+  narrow portrait frame.
+- **Right column:** eyebrow `GENESIS 1:1–4 · KJV · 0:32` → Anton title `LET THERE BE LIGHT` → a 44px
+  avatar-initials block with `Mary Kanu` / `@maryk · 14 public videos · shared 6 days ago` → the
+  actions row `▲ 2,412` · `↗ Share` · `⑂ Remix this`.
+- **`⑂ Remix this` is drawn DISABLED** in the wireframe itself, with `title="Remixing is disabled"`.
+  It is not a promised endpoint.
+- **`SCRIPTURE`** — the full verse text, in Zilla Slab.
+- **`HOW IT WAS MADE`** — four chips (`🔊 Dramatic baritone`, `🎬 Cosmic visuals`, `🎻 Orchestral`,
+  `✎ Captions on`) and a scene strip (`01 · Void 7.0s`, `02 · Deep 8.0s`, `03 · Spirit 8.0s`,
+  `04 · Light 9.0s`) with per-scene posters.
+- **No route is written anywhere** — `/gallery/[id]` is an inference from the `‹ Gallery` back link.
+  The author's own word is "page", and it is drawn with a full frame and nav.
+
+**16b — "Share yours" dialog. DESIGNED, NOT BUILT.** Author's caption: *"publish a rendered project
+to the public gallery: pick the video, confirm title/verse, set remix permission, and agree to the
+community terms."* A 560px `SHARE TO GALLERY` modal:
+
+- **Top row:** a cover thumbnail with a `Change cover frame` affordance, beside a
+  **`PROJECT ▾` picker** showing `psalm-121 · v0.0.2` — this is what removes the current
+  placeholder's "go to Your videos and pick one" indirection.
+- **Fields:** `TITLE`, `PASSAGE`, `TRANSLATION ▾` (drawn as a **select**).
+- **Toggles:** `Allow remixes` (labelled `Coming soon`) and `Show my GitHub repo`
+  ("Link ashsrinivas/psalm-121 on the watch page").
+- **Consent:** a checkbox — *"I confirm this video follows the community guidelines and that I hold
+  the rights to any material I added."*
+- **Actions:** `Cancel` / `Publish to gallery ▸`.
+- **Notably ABSENT, in both 16a and 16b:** any **visibility** control (so the shipped hard-coded
+  `"public"` is consistent with the design, and `unlisted` remains unexposed) and any **description**
+  field (the wire field `PublishGalleryItemRequest.description` becomes an orphan). `Change cover
+  frame` and `Show my GitHub repo` have no backing endpoint or column; `TRANSLATION ▾` has nothing to
+  enumerate (`TranslationSchema` is an open string, and §9-Q10 forbids hardcoding bible ids).
+
+**Turn 16's own "try next" line**, verbatim: `"add a creator profile page (their public videos)" ·
+"show the remix confirmation (fork into my workspace)" · "add a gallery empty/moderation state"`.
 
 ---
 
@@ -70,9 +185,13 @@ layout now designed):
     translations, not just KJV), and an **upvote control** (`▲ 2.4k`) — solid/filled red when the viewer
     has already upvoted (card 1 in the mock), otherwise an outlined pill.
   - "Load more" pagination button below the grid (no infinite scroll / page numbers shown).
-- **Explicitly flagged as NOT designed yet** (from the turn's own "try next" suggestions): a gallery
+- ~~**Explicitly flagged as NOT designed yet** (from the turn's own "try next" suggestions): a gallery
   item's detail/watch page, the "Share yours" publish-to-gallery dialog, and a creator profile page
-  (their public videos). Treat these as open follow-on screens, not yet speccable from wireframes.
+  (their public videos). Treat these as open follow-on screens, not yet speccable from wireframes.~~
+  **SUPERSEDED 2026-07-26 — all three are now designed**: the watch page is **16a**, the publish
+  dialog is **16b**, the creator profile is **17a** (see the two turns above). Turn 15's `＋ Share
+  yours` CTA therefore has a designed destination. 15a itself is unchanged and remains the authority
+  for the grid.
 
 **Data/entities implied:** a gallery entry has: title, scripture reference, **translation code** (shown
 per-item — the mock's variety of translations, KJV/NIV/ESV/NLT/NASB, is illustrative wireframe content,
@@ -395,9 +514,26 @@ Cutting across turns 7–14, the following entities/fields are implied by the UI
 
 ## Open gaps / notes for downstream steps
 
-1. ~~**Gallery screen itself** not yet designed~~ — **Resolved by Turn 15** (see above). Remaining
-   sub-gaps *within* the gallery flow, per Turn 15's own "try next" list: the item detail/watch page, the
-   "Share yours" publish dialog, and a creator profile page are still undesigned.
+1. ~~**Gallery screen itself** not yet designed~~ — **Resolved by Turn 15**. ~~Remaining sub-gaps
+   *within* the gallery flow, per Turn 15's own "try next" list: the item detail/watch page, the
+   "Share yours" publish dialog, and a creator profile page are still undesigned.~~ **Also resolved,
+   2026-07-26, by Turns 16 and 17** — all three are designed. The gap that replaces them is a
+   *build* gap plus a *data* gap, not a design gap:
+   - **16a watch page — BUILT** (`/gallery/[id]`).
+   - **16b publish dialog — designed, not built** as of this pass (an implementation was in
+     flight while it was written — see design-delta §2.7.1's note). Two placeholder publish
+     surfaces still ship.
+   - **17a creator profile — designed, not built**, and blocked on data that does not exist:
+     no `@handle`, no location, no bio, no per-creator totals, no follow graph, no per-creator
+     listing endpoint.
+   - **17b — designed, not built**; only card 4a (the empty state) is buildable, and cards 4b–4d
+     assert a moderation subsystem that contradicts the shipped immediate-201 publish.
+   - **Data gaps 16a renders around rather than faking:** no `@handle` column (`@maryk` ships as a
+     display name) and no global visual-style field (`🎬 Cosmic visuals` is omitted).
+   - **`viewCount` is still surfaced by no endpoint**, on any screen.
+   New sub-gaps opened by these turns, from their own try-next lines: the **remix confirmation**
+   ("fork into my workspace", asked for by both turns), a **moderator review queue**, and a
+   **follow feed**.
 2. The version-branch **"⇄ Compare"** action (14b) is referenced but not yet designed as a real screen.
 3. **11d** (a standalone Gloo AI connect modal) was explicitly *not* built — the Gloo form only exists
    inline on the Profile page (10b) and inside the first-time wizard (11a step 4). Don't design a
