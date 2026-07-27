@@ -60,8 +60,8 @@ What is REAL and working end to end today:
 
 What is genuinely NOT built yet (see §6): the cleanup workflow, prod deploy
 wiring for api/dbos, CI of any kind, a set of code-review-surfaced hardening
-follow-ups, and three *designed but unbuilt* gallery screens (Turn 16b's publish
-dialog, Turn 17a's creator profile, Turn 17b's moderation states).
+follow-ups, and two *designed but deliberately out-of-scope* gallery screens
+(Turn 17a's creator profile and Turn 17b's three moderation states).
 
 ## 2. Repo Inventory
 
@@ -192,9 +192,13 @@ upvote pill, `↗ Share`, a **disabled** `⑂ Remix this`, and the SCRIPTURE / H
 WAS MADE sections off `GalleryItemDetailDto.makingOf`. `GalleryPlayerModal` was
 **deleted** — a card's ▶ now navigates to the page.
 
-**Still not wired in the UI**: Turn 16b's real publish dialog (the placeholders
-in `share-yours-dialog.tsx` and `your-videos-list.tsx` still stand — §6), Turn
-17a's creator profile, and Turn 17b's empty/moderation states. A flag-gated
+Turn **16b**'s real publish dialog is wired too —
+`app/_components/gallery/publish-to-gallery-dialog.tsx`, ONE dialog behind a
+PROJECT picker, which **deleted** both placeholders (`share-yours-dialog.tsx`
+and the inline form in `your-videos-list.tsx`) — as is Turn **17b**'s card 4a,
+the `GALLERY · NO RESULTS` empty state. **Still not wired in the UI**: Turn 17a's
+creator profile and Turn 17b's other three (moderation) states, both out of scope
+by explicit decision — §6. A flag-gated
 mock mode (`NEXT_PUBLIC_SUPAGLOO_DEMO` + `?mock=`) keeps the original all-client
 demo behavior for pure-UI regression specs — including a mock render ticker —
 while real-stack Stagehand specs use the extended `?seed=` seam instead (§5).
@@ -852,39 +856,44 @@ These are load-bearing properties of today's test suite:
 Per `docs/plan.md` (tasks 42–56 and 59–61 not done; **39–41 and 63–68 are now
 DONE** — see the closed-out entries at the end of this list):
 
-- **The three designed-but-unbuilt gallery screens (2026-07-26).** Turn 15's
-  "try next" list flagged three follow-on screens; Turns **16** and **17** (added
-  by the design author on 2026-07-26) have since **designed all three**, and one
-  of them is built. Precisely:
+- **The Turn 16/17 gallery screens (2026-07-26).** Turn 15's "try next" list
+  flagged three follow-on screens; Turns **16** and **17** (added by the design
+  author on 2026-07-26) **designed all three**, plus a fourth (17b). Three of the
+  four surfaces are now built; the remaining two are out of scope by explicit
+  decision, not merely unscheduled. Precisely:
   - **16a — watch page: BUILT** (`/gallery/[id]`, §2.4). Transcribed from the
     wireframe, not invented.
-  - **16b — the "Share yours" publish-to-gallery dialog: DESIGNED, NOT BUILT** as
-    of this doc pass. Both placeholders it replaces are still shipping —
-    `app/_components/gallery/share-yours-dialog.tsx` (a 440px modal that just
-    sends you to `/your-videos`) and the second publish surface inside
-    `app/_components/your-videos/your-videos-list.tsx`. 16b unifies them behind a
-    PROJECT picker.
+  - **16b — the "Share yours" publish-to-gallery dialog: BUILT**
+    (`app/_components/gallery/publish-to-gallery-dialog.tsx`), ONE dialog behind a
+    PROJECT picker. It **deleted** both placeholders it replaces —
+    `app/_components/gallery/share-yours-dialog.tsx` (the 440px modal that just
+    sent you to `/your-videos`) and the second publish surface inside
+    `app/_components/your-videos/your-videos-list.tsx`.
 
-    > **Verify this line before trusting it.** At the moment it was written an
-    > implementation was **in flight**: `lib/gallery/publish-options.test.ts` and
+    > *Corrected at release, 2026-07-26.* This bullet previously read
+    > `DESIGNED, NOT BUILT` with a "verify before trusting it" hedge, because at
+    > the time of the doc pass `lib/gallery/publish-options.test.ts` and
     > `tests/unit/publish-to-gallery-dialog.test.tsx` existed and were **red**
-    > (their modules did not exist yet — red-first TDD), which is also why the
-    > nextjs unit lane reported `2 failed | 52 passed` file-level while all 746
-    > collected tests passed. If `publish-to-gallery-dialog.tsx` now exists and the
-    > lane is clean, 16b landed after this pass and this bullet is stale.
-  - **17a — creator profile: DESIGNED, NOT BUILT**, and not buildable as drawn.
-    It needs a `@handle`, a location, a bio, per-creator totals, a follow graph
-    and a per-creator listing endpoint; none of those exist at any layer.
-  - **17b — gallery empty + moderation states: DESIGNED, NOT BUILT**, and three
-    of its four cards **contradict the shipped system**. `PENDING REVIEW`,
-    `REMOVED FROM GALLERY` and `REPORT THIS VIDEO` assert a moderation subsystem
-    (review queue, appeals, reports, email-on-approval) that exists in no schema,
-    no endpoint and no plan row, and they presume publish is asynchronous when
+    > (red-first TDD, modules not yet written) — which is also why the nextjs unit
+    > lane then reported `2 failed | 52 passed` file-level while all 746 collected
+    > tests passed. The hedge did its job: 16b landed, the lane is clean at
+    > 789/789, and the bullet is now settled rather than provisional.
+  - **17a — creator profile: DESIGNED, OUT OF SCOPE** by explicit decision, and
+    not buildable as drawn. It needs a `@handle`, a location, a bio, per-creator
+    totals, a follow graph and a per-creator listing endpoint; none of those exist
+    at any layer.
+  - **17b — gallery empty + moderation states: card 4a BUILT, the other three
+    DESIGNED and OUT OF SCOPE** by explicit decision — and those three
+    **contradict the shipped system**. `PENDING REVIEW`, `REMOVED FROM GALLERY`
+    and `REPORT THIS VIDEO` assert a moderation subsystem (review queue, appeals,
+    reports, email-on-approval) that exists in no schema, no endpoint and no plan
+    row, and they presume publish is asynchronous when
     `POST /v1/renders/:id/gallery` returns **201 with the live item**
     (design-delta §7). `GalleryVisibility` is `public|unlisted` only — there is
-    no `in_review`/`removed` state to render. Only card **4a**, the
-    `GALLERY · NO RESULTS` empty state, is buildable today, and it is not built:
-    `gallery-grid.tsx` still ships the placeholder empty/loading/error states.
+    no `in_review`/`removed` state to render, so building them is a product
+    decision about whether publishing stops being immediate. Card **4a**, the
+    `GALLERY · NO RESULTS` empty state, was the only one buildable against
+    today's contract and it **shipped** in `gallery-grid.tsx`.
 - **Named data gaps the built watch page renders around** (it omits rather than
   invents, which is why they are gaps and not bugs): no `@handle` column anywhere
   on `User`, so the design's `@maryk` ships as `displayName`; no global
@@ -902,20 +911,22 @@ DONE** — see the closed-out entries at the end of this list):
   and the api honours both, but the publish UI hard-codes `"public"` — and the
   design agrees: 16b draws no visibility control. `/gallery/[id]` is the first
   surface on which "unlisted, reachable by id" means anything.
-- **`supagloo-nodejs-dbos` is UNRELEASED, and the release is no longer a pure
-  pin bump.** Root's submodule pointer and the repo's `main` are both at
-  `ae19e36`, while branch `v0.0.34` carries two unmerged db-lib pin bumps
-  (`971c3e7` → `0688ec6`, `1001bd8` → `f608951`) **plus uncommitted product
-  code**: the new optional `DBOS_SYSTEM_DATABASE_SCHEMA` key in
-  `src/config/env.ts` and the `systemDatabaseSchemaName` passthrough in
-  `src/dbos/runtime.ts`. Behaviour is byte-identical while the key is unset
-  (`translateDbosConfig` resolves `undefined` → `"dbos"`), but it **is** product
-  code, so the release must (a) merge it, (b) bump *and* fast-forward the root
-  submodule pointer, (c) keep the Dockerfile's `DATABASE_LIB_REF` ARG in lockstep
-  with the db-lib pointer, and (d) **rebuild the `dbos` image** — a pin-bump-only
-  release would ship a worker binary without the passthrough. The api carries the
-  mirror-image change (`a360c07` merged; env + enqueuer changes uncommitted) and
-  needs the same treatment.
+- ~~**`supagloo-nodejs-dbos` is UNRELEASED, and the release is no longer a pure
+  pin bump.**~~ **RELEASED 2026-07-26** (PR #36, merge `da194db`; next branch
+  `v0.0.35`). Recorded here because the release was *not* a pure pin bump and the
+  four-part checklist this bullet demanded is what was actually executed: branch
+  `v0.0.34`'s two db-lib pin bumps (`971c3e7` → `0688ec6`, `1001bd8` → `f608951`)
+  merged **together with** the product code — the optional
+  `DBOS_SYSTEM_DATABASE_SCHEMA` key in `src/config/env.ts` and the
+  `systemDatabaseSchemaName` passthrough in `src/dbos/runtime.ts` — root's
+  submodule pointer bumped *and* its checkout fast-forwarded, the Dockerfile's
+  `ARG DATABASE_LIB_REF` verified in lockstep with the db-lib pointer at
+  `f608951` (in **both** api and dbos), and the `dbos` image rebuilt, since a
+  pin-bump-only release would have shipped a worker binary without the
+  passthrough. Behaviour remains byte-identical while the key is unset
+  (`translateDbosConfig` resolves `undefined` → `"dbos"`). The api's mirror-image
+  change shipped in the same sweep (PR #41, merge `4a6e4ec`; next branch
+  `v0.0.40`).
 - **Cleanup workflow (42).** No scheduled orphaned-asset / expired-session
   purge.
 - **Ops/hardening (43–47).** Boot-time env hardening incomplete; Prisma-pin
