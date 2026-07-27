@@ -159,6 +159,20 @@ services:
       RENDER_INSTALL_TIMEOUT_SECONDS: ${RENDER_INSTALL_TIMEOUT_SECONDS:-900}
       RENDER_NARRATION_MODEL: ${RENDER_NARRATION_MODEL:-}
       RENDER_MUSIC_MODEL: ${RENDER_MUSIC_MODEL:-}
+      # Plan row 42 — the nightly `cleanupOrphanedAssetsWorkflow`. Both OPTIONAL with real
+      # defaults (retention 168h = 7 days; dry-run false), so the stack boots unchanged
+      # without them. Named here for discoverability: the 7-day window is also the safety
+      # property that keeps this container's nightly sweep away from freshly-seeded e2e
+      # fixtures, whose age is measured in seconds.
+      CLEANUP_RETENTION_HOURS: ${CLEANUP_RETENTION_HOURS:-168}
+      CLEANUP_DRY_RUN: ${CLEANUP_DRY_RUN:-false}
+    # Plan row 45 / D45.5. `renderWorkflow` drives a headless Chromium in this container.
+    # Docker's default /dev/shm is 64MB; Chromium's renderer processes use shared memory
+    # and die with a bare, unattributable crash when it runs out. This is a CORRECTNESS
+    # guard, not a measurement artifact, so it ships in the base file. Deliberately NO
+    # `mem_limit` / `deploy.resources` here — a memory ceiling would change the stack every
+    # e2e lane in four repos runs against; a constrained profile belongs in an override.
+    shm_size: "1gb"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -173,6 +187,29 @@ services:
     build:
       context: ./supagloo-nextjs
       dockerfile: Dockerfile
+      args:
+        # Plan row 43 / D43.3, MEASURED. `next build` collects page data for /_not-found,
+        # which evaluates `app/layout.tsx`, which re-reads the validated config — so with
+        # NO build-time value the image cannot be built at all (this service had never
+        # been built successfully, which is why nothing had noticed). A build arg is baked
+        # into the image's prerendered output and into `docker history`, so the REAL
+        # credential must never be one: this is a deliberate non-secret placeholder, and
+        # the `environment:` block below is what supplies the real key to the running
+        # container. The runner stage inherits no ENV from the builder stage, so a
+        # container started without that block still refuses to boot — which is exactly
+        # what makes row 43's negative Compose case a real assertion.
+        YV_APP_KEY: build-time-placeholder-not-a-real-key
+    environment:
+      # Task 43 / D43.3. nextjs reads YV_APP_KEY SERVER-side (it is deliberately not a
+      # NEXT_PUBLIC_* var), so this is a RUNTIME env. The root .env spells this credential
+      # YOUVERSION_APP_KEY (the backends' name); nextjs's shorter YV_APP_KEY is a
+      # pre-existing, documented divergence, bridged here.
+      YV_APP_KEY: ${YOUVERSION_APP_KEY}
+      # DO NOT add SECRETS_ENCRYPTION_KEY here. nextjs has no DB and no S3 access and never
+      # calls encryptSecret/decryptSecret (design-delta §5.1:719-727); its boot validator
+      # (`lib/config/env.ts`) REJECTS the variable's presence and the container will refuse
+      # to boot. That inversion is task 43's actual nextjs hardening (brief §9 S4), and
+      # `tests/unit/compose-config.test.ts` PART V invariant 7 holds it.
     ports:
       - "8000:3000"
 

@@ -800,12 +800,19 @@ These are load-bearing properties of today's test suite:
      **deliberate duplicates, not drift**: routing them through the root checkout
      would make specs that need no root checkout today depend on one, and the two
      repos must not share a lane schema regardless.
-   - The 14 lanes: **api** — `dbos_e2e_api_render`, `dbos_e2e_api_ai`,
+   - The 15 lanes: **api** — `dbos_e2e_api_render`, `dbos_e2e_api_ai`,
      `dbos_e2e_api_jobs`, `dbos_e2e_api_repo_prov`; **dbos** —
      `dbos_e2e_dbos_noop`, `_dbos_commit`, `_dbos_publish`, `_dbos_import`,
      `_dbos_scaffold`, `_dbos_script`, `_dbos_image`, `_dbos_audio`,
-     `_dbos_video`, `_dbos_render`. All 14 verified present as siblings of `dbos`
-     inside `supagloo_dbos`.
+     `_dbos_video`, `_dbos_render`, `_dbos_cleanup`. All 15 verified present as
+     siblings of `dbos` inside `supagloo_dbos`.
+     The 15th, `dbos_e2e_dbos_cleanup`
+     (`dbos/tests/e2e/cleanup-orphaned-assets.e2e.ts`, plan row 42), is the only
+     new lane this project has granted since the scheme was introduced, and the
+     grant is narrow: that spec seeds **and deletes** objects in the one shared
+     `supagloo-dev` bucket, so folding it into an existing spec file would
+     interleave its deletes with another spec's assertions about the same bucket.
+     Every other new e2e assertion in that run folded into an existing spec.
    - **`SUPAGLOO_DBOS_E2E_SCHEMA_SUFFIX`** is the escape hatch for genuinely
      parallel runs (two CI jobs, one Postgres). Unset by default, because
      `fileParallelism: false` means specs within a repo never overlap. A name that

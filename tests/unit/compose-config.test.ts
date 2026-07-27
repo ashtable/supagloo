@@ -162,6 +162,129 @@ describe("docker-compose.yml", () => {
       expect(hostPorts(services.nextjs.ports)).toContain("8000");
     });
   });
+
+  // -------------------------------------------------------------------------------
+  // PART V invariant 7 — plan row 43 / D43.1(2): "distinct per ENVIRONMENT".
+  //
+  // The row asks all three services to enforce "distinct-per-env expectations". Two of
+  // its three halves are NOT enforceable in a service's own process:
+  //
+  //   * "identical across api and dbos WITHIN an environment" is invariant 5 above, and
+  //     it is a Compose-level property because no single service can see the other's key.
+  //   * "distinct ACROSS environments" is likewise invisible from inside one process —
+  //     a container cannot know what some other deployment's key is.
+  //
+  // The naive in-process gate (reject the well-known dev key when NODE_ENV ===
+  // "production") is the WRONG gate and would refuse to boot the shipped stack:
+  // docker-compose.yml pins `NODE_ENV: production` on BOTH api and dbos while
+  // hardcoding that very key, and docker-compose.test.yml flips only api to
+  // `development` (load-bearing for the test-seed double gate — see
+  // compose-test-overlay.test.ts). So the in-process half of row 43 is the ALL-ZEROS
+  // rejection (api/dbos `src/config/env.ts`), and the "distinct per environment" half
+  // is enforced HERE, structurally, over the tracked files that actually carry keys.
+  // -------------------------------------------------------------------------------
+  describe("PART V invariant 7 — the dev secrets key is confined and labelled (D43.1)", () => {
+    const DEV_KEY = "0123456789abcdef".repeat(4);
+    /** Every tracked root file that may legitimately contain the literal, and why. */
+    const PERMITTED = new Map([
+      ["docker-compose.yml", "the shipped dev stack pins it on api + dbos"],
+      [".env.example", "it documents the dev default and how to replace it"],
+    ]);
+    const CANDIDATES = [
+      "docker-compose.yml",
+      "docker-compose.test.yml",
+      ".env.example",
+      "README.md",
+    ] as const;
+
+    it("appears ONLY in the files permitted to carry it — never in the test overlay", () => {
+      // design-delta §11.7:2309-2318 records the real incident: the test overlay
+      // overrode SECRETS_ENCRYPTION_KEY, so the api encrypted with a key dbos could not
+      // decrypt with. An overlay is exactly where a second, drifting copy reappears.
+      const offenders = CANDIDATES.filter(
+        (name) =>
+          !PERMITTED.has(name) &&
+          readFileSync(resolve(ROOT, name), "utf8").includes(DEV_KEY),
+      );
+      expect(offenders).toEqual([]);
+    });
+
+    it("every occurrence in docker-compose.yml is labelled dev-only", () => {
+      // A copied-forward key is the failure this prevents. Each occurrence must sit
+      // within a few lines of prose that says not to ship it.
+      const lines = readFileSync(COMPOSE, "utf8").split("\n");
+      const hits = lines
+        .map((line, i) => (line.includes(DEV_KEY) ? i : -1))
+        .filter((i) => i >= 0);
+      expect(hits.length).toBeGreaterThan(0);
+      for (const i of hits) {
+        const window = lines.slice(Math.max(0, i - 6), i + 1).join("\n");
+        expect(
+          /dev-only|never use this in prod|never use it in prod/i.test(window),
+          `docker-compose.yml:${i + 1} carries the dev key with no dev-only label nearby`,
+        ).toBe(true);
+      }
+    });
+
+    it(".env.example tells an operator how to mint a DISTINCT production key", () => {
+      // This sentence IS the mechanical content of "distinct per environment": the same
+      // recipe both services' boot errors already recommend.
+      const envExample = readFileSync(resolve(ROOT, ".env.example"), "utf8");
+      expect(envExample).toContain("openssl rand -hex 32");
+    });
+
+    it("exactly the api and dbos services carry SECRETS_ENCRYPTION_KEY", () => {
+      // §9 S4 at the Compose layer. nextjs has no DB and no S3 access and never calls
+      // encryptSecret/decryptSecret; its own boot validator now REJECTS the variable's
+      // presence, so adding it here would make the container refuse to boot.
+      const carriers = Object.keys(services).filter(
+        (name) =>
+          envValue(services[name]!.environment, "SECRETS_ENCRYPTION_KEY") !== undefined,
+      );
+      expect(carriers.sort()).toEqual(["api", "dbos"]);
+    });
+  });
+
+  // -------------------------------------------------------------------------------
+  // Row 43 / D43.3 — the nextjs service's credential wiring.
+  //
+  // As shipped before this row the `nextjs` service had NO `environment:` block and NO
+  // build `args:`, while supagloo-nextjs/Dockerfile takes YV_APP_KEY as a build ARG. The
+  // key therefore reached neither the build nor the container, and row 43's "refuses to
+  // boot without it" case was not executable for nextjs at all.
+  // -------------------------------------------------------------------------------
+  describe("row 43 / D43.3 — nextjs gets YV_APP_KEY at RUNTIME", () => {
+    it("substitutes YV_APP_KEY from the root .env's YOUVERSION_APP_KEY", () => {
+      expect(envValue(services.nextjs?.environment, "YV_APP_KEY")).toBe(
+        "${YOUVERSION_APP_KEY}",
+      );
+    });
+
+    it("does NOT give nextjs the application secrets key", () => {
+      expect(
+        envValue(services.nextjs?.environment, "SECRETS_ENCRYPTION_KEY"),
+      ).toBeUndefined();
+    });
+
+    it("passes only a NON-SECRET placeholder as the build arg", () => {
+      // MEASURED, and it qualifies D43.3's "runtime env, NOT a build arg": with no build
+      // arg at all the image cannot be built — `next build` fails collecting page data for
+      // /_not-found because app/layout.tsx re-reads the validated config at module scope.
+      // So a build-time value is required for the image to exist, and a RUNTIME value is
+      // required for the boot refusal to be observable. They are satisfied separately: the
+      // real credential is never a build arg (a build arg is baked into the image's
+      // prerendered output and into `docker history`), and the runner stage inherits no
+      // ENV from the builder stage, so the running container's key comes only from
+      // `environment:` above.
+      const build = services.nextjs?.build as
+        | { args?: Record<string, string> }
+        | undefined;
+      const arg = build?.args?.YV_APP_KEY;
+      expect(arg, "nextjs build args must set YV_APP_KEY").toBeDefined();
+      expect(arg).not.toContain("${");
+      expect(arg).toMatch(/placeholder/i);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------------

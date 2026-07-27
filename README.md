@@ -71,6 +71,20 @@ npm run test:unit   # pure-logic: parses the compose files + the init scripts. N
 npm run test:e2e    # drives the REAL Compose stack (reuse-or-spawn), then tears it down.
 ```
 
+There is a third entry point that is deliberately **not** a suite:
+
+```bash
+npm run load:render            # plan row 45 — the render queue's load/perf harness
+npm run load:render -- --dry-run
+```
+
+It enqueues N real renders onto the shared `render` queue and reports per-render wall
+clock, the observed maximum simultaneous render workflows, and the `dbos` container's
+memory profile. It gates nothing — a load run occupies the worker for minutes and must
+never be able to turn the gating suite red. Its measured output, and the Railway sizing
+recommendation extrapolated from it, live in [`docs/render-sizing.md`](docs/render-sizing.md);
+its pure utilities are unit-tested by `tests/unit/render-load-harness.test.ts`.
+
 `docker-compose.test.yml` is a **test-enablement overlay**, applied explicitly with
 `-f` (Docker never auto-merges a `.test.yml`). It is not optional and not vestigial: it
 carries the `NODE_ENV: development` + `SUPAGLOO_ENABLE_TEST_SEED=1` double-gate that the
