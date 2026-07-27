@@ -23,12 +23,19 @@ three sorts produce three different leaders (`ANCHORS` in the seed helper).
 Sign in as a fixture **author** (`fixtures.users[0].sessionToken` planted as the session
 cookie), never the `?seed=authed-returning` viewer: the viewer owns votes, not projects.
 
-**A leaked published row does not merely survive teardown — it BREAKS teardown.** The new
-item carries a server-minted cuid, which `clearGalleryFixtures()` cannot recognise. Worse,
-its `renderJobId` FKs the fixture `RenderJob` that teardown is about to delete, so one
-leftover row makes the delete transaction violate the FK and **roll back — nothing is
-cleaned up at all**, and the next run's `assertNoForeignGalleryItems()` throws about
-something unrelated.
+**A leaked published row is a LIVE PUBLIC row until teardown reaches it.** The new item
+carries a server-minted cuid, which `clearGalleryFixtures()`'s `e2e-gallery-` gate cannot
+recognise, so nothing removes it deliberately; the next run's
+`assertNoForeignGalleryItems()` then throws about something unrelated.
+
+⚠️ **CORRECTED 2026-07-26.** This entry used to say the leak also BREAKS teardown, by
+making the fixture delete violate `GalleryItem.renderJobId` and roll the whole
+transaction back. **That is false against the live schema:** the constraint is
+`ON DELETE CASCADE` (`pg_constraint.confdeltype = 'c'`), so the cascade quietly sweeps a
+missed row up with its fixture `RenderJob`. Verified by running E-GP4 with its id
+registration made unreachable — the row was gone afterwards. Do not repeat the rollback
+claim; the reason the discipline still matters is the WINDOW (a public row for the length
+of the run) and the fact that a cascade only fires if teardown runs at all.
 
 So: track every published id in a module-scope `Set` **the instant the watch-page URL is
 known, before any further assertion**, and drain it in the FILE-level `afterAll` (not the

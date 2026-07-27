@@ -136,6 +136,35 @@ that shape, verified by rewriting the method fire-and-forget.
   pushed BEFORE the first assertion so a failing expectation still cleans up. Proven by
   `galleryItem.count() === 0` after the runs, not by "the next run didn't complain".
 
+## Three corrections the code review found (2026-07-26, W2/W3/R-B4/R-B5)
+
+- **"A refusal costs no GitHub round trip" was false for the one refusal a caller can
+  repeat.** `captureMakingOf` ran BEFORE the insert, so `already_published` discovered the
+  duplicate only via P2002 — after minting an installation token and reading a file. Publish
+  now does a `findUnique` on `renderJobId` first and throws there. **Keep the P2002 catch**:
+  two concurrent publishes both read "not published", and the unique index is what actually
+  decides. Cheap gate, constraint is the correctness boundary. The pre-check is scoped to the
+  RENDER, never the caller — an owner mismatch already 404'd upstream, and adding `ownerId`
+  would make a genuine duplicate look publishable to a second user.
+- **Three docblocks claimed the listing does not read `makingOf`; nothing enforced it.**
+  `findMany` carrying only `include` selects EVERY scalar column. Measured through the real
+  Prisma 7.8 client: the emitted SELECT listed `"GalleryItem"."makingOf"` for all 24 rows.
+  Fixed with `omit: { makingOf: true }` (composes with `include`; the owner relation still
+  comes back), and the listing's row type is now `GalleryCardRow = Omit<GalleryItemRow,
+  "makingOf">` so a card mapper reaching for it is a COMPILE error, not a silent `undefined`.
+  `getItem`'s `findFirst` is untouched — that read is why the column exists.
+- **The `(row as { makingOf?: unknown })` cast in `toGalleryItemDetailDto` widened a type
+  that was never narrow** — `GalleryItem.makingOf` is already `Prisma.JsonValue | null`. The
+  cast would have kept compiling if the column were renamed or dropped.
+- **`making-of.ts` re-typed the exempt control codes** (`[0x09, 0x0a, 0x0d]`) instead of
+  importing the api's own exported `POSTGRES_TEXT_EXEMPT_CONTROL_CODES` — same package, so
+  there was no reason for a fourth list. New `U-MOB16b` enumerates all 33 C0+DEL code points
+  (probe char embedded BETWEEN letters, because `trim()` eats VT and FF) and asserts the
+  survivors equal that constant, which is what makes the import load-bearing. Mutating the
+  shared list now fails making-of's suite — and it fails as `snapshot is null`, revealing the
+  real hazard: if the three copies disagree, the sanitizer keeps a byte the schema rejects
+  and the whole section silently degrades to `null`.
+
 Related: [[gallery-backend-built]], [[bound-is-not-safe-postgres-value-gates]],
 [[one-rule-one-module-many-boundaries]], [[prisma-migrate-dev-blocked-by-dbos-table]],
 [[a-spec-that-writes-to-a-global-surface-owes-teardown]],
