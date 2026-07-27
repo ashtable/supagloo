@@ -234,6 +234,28 @@ describe("docker-compose.test.yml — test-enablement overlay", () => {
     });
   });
 
+  describe("the overlay never partitions the DBOS system database", () => {
+    it("sets DBOS_SYSTEM_DATABASE_SCHEMA on NO service", () => {
+      // Added 2026-07-26 alongside the per-lane DBOS system-schema isolation that killed
+      // the "keep the Compose `dbos` service idle" e2e precondition.
+      //
+      // A lane schema belongs at the SPEC'S CALL SITE, where exactly one suite is
+      // affected and the value is visible in the file you are reading. Put it in this
+      // overlay instead and it silently repartitions the whole stack for anyone running
+      // `docker compose -f … -f docker-compose.test.yml up`: the api and the worker would
+      // agree with each other but disagree with every already-persisted checkpoint, and
+      // in-flight work would appear to vanish. The overlay's job is TEST ENABLEMENT, not
+      // test isolation.
+      //
+      // Parity across api and dbos (the other half of the footgun) is asserted in
+      // `compose-config.test.ts` → "PART V invariant 6", across all three compose files.
+      const offenders = serviceNames.filter(
+        (name) => envMap(services[name].environment).DBOS_SYSTEM_DATABASE_SCHEMA !== undefined,
+      );
+      expect(offenders).toEqual([]);
+    });
+  });
+
   describe("the overlay's surviving reason to exist", () => {
     it("double-gates the test-seed route on the api (row 62 item (a))", () => {
       // The base compose pins NODE_ENV: production and the Dockerfile bakes

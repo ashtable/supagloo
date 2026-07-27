@@ -163,3 +163,87 @@ describe("docker-compose.yml", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------------
+// PART V invariant 6 — api and dbos must AGREE on DBOS_SYSTEM_DATABASE_SCHEMA.
+//
+// `DBOS_SYSTEM_DATABASE_SCHEMA` (added 2026-07-26) names the SCHEMA inside the DBOS
+// system database that holds DBOS's checkpoint + queue tables; unset, the SDK's default
+// `dbos` stands. It is the designed fallback for a platform that exposes only one
+// Postgres database (design-delta §4 / §9-Q7), and it is a genuine footgun: the api
+// ENQUEUES into that schema and the dbos worker POLLS it. Set it on one service only and
+// the api writes where nothing reads — jobs are accepted, persisted, and sit queued
+// forever with no error anywhere. Nothing in the SDK or either env loader can catch that,
+// because each service's config is individually valid.
+//
+// This lives at the COMPOSE layer because that is the only layer that sees both services
+// at once. It is a regression fence: today the key is set nowhere, so both branches are
+// vacuously satisfied. That is the point — the day someone sets it, this decides whether
+// they set it correctly. It is proven by mutation (set it on `api` only ⇒ RED), not by
+// having ever been red on its own.
+//
+// The check runs per-file AND on the merged result, because `docker compose -f a -f b`
+// merges service environments key-by-key: a base file could pair them and an overlay
+// could then override just one half.
+describe("PART V invariant 6 — DBOS_SYSTEM_DATABASE_SCHEMA parity across api and dbos", () => {
+  const KEY = "DBOS_SYSTEM_DATABASE_SCHEMA";
+  const FILES = [
+    "docker-compose.yml",
+    "docker-compose.override.yml",
+    "docker-compose.test.yml",
+  ] as const;
+
+  const loaded = FILES.map((name) => ({
+    name,
+    services:
+      (parse(readFileSync(resolve(ROOT, name), "utf8")) as ComposeFile).services ??
+      {},
+  }));
+
+  it.each(FILES)(
+    "%s gives api and dbos the SAME value for the key (or sets it on neither)",
+    (name) => {
+      const services = loaded.find((f) => f.name === name)!.services;
+      // A file that declares neither service cannot break the pairing.
+      const api = services.api ? envValue(services.api.environment, KEY) : undefined;
+      const dbos = services.dbos ? envValue(services.dbos.environment, KEY) : undefined;
+      // ONE assertion covers both failure shapes — set on one service only, and set on
+      // both but differently — because they have the same consequence: the api enqueues
+      // into a schema the worker never polls, and every job sits queued forever with no
+      // error anywhere. `undefined === undefined` is the (current) passing case.
+      expect(
+        dbos,
+        `${name}: api has ${KEY}=${api ?? "<unset>"} but dbos has ${dbos ?? "<unset>"}`,
+      ).toBe(api);
+    },
+  );
+
+  it("the MERGED api+dbos stack resolves the key to the same value on both services", () => {
+    // Compose merge semantics for `environment`: later `-f` files win per key.
+    const resolveFor = (svc: "api" | "dbos") => {
+      let value: string | undefined;
+      for (const { services } of loaded) {
+        const found = services[svc]
+          ? envValue(services[svc]!.environment, KEY)
+          : undefined;
+        if (found !== undefined) value = found;
+      }
+      return value;
+    };
+    expect(resolveFor("api")).toBe(resolveFor("dbos"));
+  });
+
+  it("is UNSET everywhere today, so the SDK default 'dbos' is the shipped configuration", () => {
+    // Pins the CURRENT deployment shape, separately from the parity rule above: a paired
+    // value on both services would satisfy parity while still silently repartitioning
+    // every developer's stack. Changing this line must be a deliberate act.
+    for (const { name, services } of loaded) {
+      for (const svc of Object.keys(services)) {
+        expect(
+          envValue(services[svc]!.environment, KEY),
+          `${name} → ${svc} sets ${KEY}`,
+        ).toBeUndefined();
+      }
+    }
+  });
+});
