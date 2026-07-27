@@ -8,11 +8,13 @@
     "test": "vitest run",
     "test:unit": "vitest run",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
-    "cleanup:github-e2e": "node scripts/cleanup-e2e-repos.mjs"
+    "cleanup:github-e2e": "node scripts/cleanup-e2e-repos.mjs",
+    "load:render": "node scripts/render-load.mjs"
   },
   "devDependencies": {
     "@aws-sdk/client-s3": "^3.717.0",
     "@aws-sdk/s3-request-presigner": "^3.717.0",
+    "@dbos-inc/dbos-sdk": "4.23.6",
     "@types/node": "^24",
     "@types/pg": "^8.11.10",
     "pg": "^8.13.1",

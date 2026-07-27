@@ -96,7 +96,7 @@ describe("Compose dbos worker: launched against this stack", () => {
    * `table_name LIKE 'workflow%' OR table_schema = 'dbos'` across the WHOLE
    * `supagloo_dbos` database. Per-lane DBOS system-schema isolation (api and dbos
    * `src/testing/dbos-lane-isolation.ts`) made that predicate self-satisfying: the
-   * fourteen PERMANENT `dbos_e2e_*` lane schemas each carry six `workflow*` relations,
+   * fifteen PERMANENT `dbos_e2e_*` lane schemas each carry six `workflow*` relations,
    * so the old count is well over eighty before the container is even considered. It
    * therefore stayed green with the worker crash-looping — the precise failure it was
    * written to catch. Lane schemas are residue of OTHER repos' test lanes and must be

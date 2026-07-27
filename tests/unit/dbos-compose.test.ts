@@ -127,4 +127,38 @@ describe("docker-compose.yml — Task #15 dbos worker service", () => {
   it("publishes no host ports (the worker has no public HTTP surface)", () => {
     expect(hostPorts(services.dbos.ports)).toHaveLength(0);
   });
+
+  describe("plan row 45 / D45.5 — render sizing", () => {
+    it("raises shm_size so Chromium is not confined to Docker's 64MB /dev/shm", () => {
+      // `renderWorkflow` drives a headless Chromium inside this container. Docker's
+      // default /dev/shm is 64MB; Chromium uses shared memory for its renderer processes
+      // and dies with a bare, unattributable crash when it runs out — which surfaces here
+      // as a failed render with no useful error. This is a CORRECTNESS guard, not a
+      // measurement artifact, which is why it ships in the base file.
+      const shm = (services.dbos as { shm_size?: unknown }).shm_size;
+      expect(shm).toBeDefined();
+      expect(String(shm)).toMatch(/^(1gb|1g|1073741824)$/i);
+    });
+
+    it("sets NO memory ceiling on the shipped stack (D45.5)", () => {
+      // A `mem_limit` / `deploy.resources` stanza here would change the stack that every
+      // other e2e lane in four repos runs against, on the strength of one measurement.
+      // A constrained profile belongs in an override the harness applies, not in the
+      // shipped file.
+      const svc = services.dbos as { mem_limit?: unknown; deploy?: unknown };
+      expect(svc.mem_limit).toBeUndefined();
+      expect(svc.deploy).toBeUndefined();
+    });
+
+    it("leaves RENDER_MEDIA_CONCURRENCY unset so Remotion's own default stands", () => {
+      // api and dbos are not deployed to Railway (current-design §6:932-935), so any
+      // recommended number is extrapolated from Compose. Shipping a guess as the default
+      // would change every render's behaviour on a measurement not yet made; the variable
+      // exists (dbos `src/config/env.ts`) as an operator knob and is documented in
+      // `.env.example` and `docs/render-sizing.md`.
+      expect(
+        envValue(services.dbos.environment, "RENDER_MEDIA_CONCURRENCY"),
+      ).toBeUndefined();
+    });
+  });
 });
