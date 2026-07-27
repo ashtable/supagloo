@@ -336,12 +336,34 @@ describe("PART V invariant 6 — DBOS_SYSTEM_DATABASE_SCHEMA parity across api a
     "docker-compose.test.yml",
   ] as const;
 
-  const loaded = FILES.map((name) => ({
-    name,
-    services:
-      (parse(readFileSync(resolve(ROOT, name), "utf8")) as ComposeFile).services ??
-      {},
-  }));
+  // `docker-compose.override.yml` is GITIGNORED, so its absence is a normal state — a fresh
+  // clone has none, and `docs/release-gate.md` §2 explicitly instructs you to move it aside
+  // before rebuilding from the committed contexts. Reading it unconditionally at module scope
+  // threw during COLLECTION, which took this whole file out while vitest still reported
+  // "287 passed" — 23 tests silently stopped reporting, the exact green-lie shape this suite
+  // exists to prevent. A missing file is the "declares neither service" case, which the
+  // per-file assertion below already treats as passing.
+  const readServices = (name: string): ComposeFile["services"] => {
+    let raw: string;
+    try {
+      raw = readFileSync(resolve(ROOT, name), "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
+      throw err;
+    }
+    return (parse(raw) as ComposeFile).services ?? {};
+  };
+
+  const loaded = FILES.map((name) => ({ name, services: readServices(name) }));
+
+  it("survives a missing gitignored override instead of failing collection", () => {
+    // Pins the mechanism, not the outcome: if someone restores the unconditional read, this
+    // file stops COLLECTING and vitest reports one failed FILE rather than one failed test —
+    // so the assertion that matters is that `loaded` is fully built for every FILES entry by
+    // the time any test runs at all.
+    expect(loaded.map((f) => f.name)).toEqual([...FILES]);
+    expect(readServices("docker-compose.definitely-not-here.yml")).toEqual({});
+  });
 
   it.each(FILES)(
     "%s gives api and dbos the SAME value for the key (or sets it on neither)",
