@@ -374,7 +374,7 @@ feed"`.
 | `id` | PK — also the DBOS workflow ID |
 | `userId`, `projectId` (nullable), `sceneId` (nullable string — the manifest scene id) | |
 | `kind` | enum `storyboard \| script \| image \| narration \| music \| video` |
-| `provider` | enum `gloo \| openrouter` (user-selected per request), **constrained per `kind` by a compatibility matrix**: `storyboard`/`script` accept `gloo` **or** `openrouter`; `image`/`narration`/`music`/`video` accept `openrouter` **ONLY** (Gloo has no media modalities — §9-Q2). Enforced **at enqueue**, encoded once as a shared `database-lib` constant (see §7 "Provider call patterns" and §8) |
+| `provider` | enum `gloo \| openrouter` (user-selected per request), **constrained per `kind` by a compatibility matrix**: `storyboard`/`script` accept `gloo` **or** `openrouter`; `image` accepts `gloo` **or** `openrouter`; `narration`/`music`/`video` accept `openrouter` **ONLY** (**corrected 2026-07-28** — see §9-Q2). Enforced **at enqueue**, encoded once as a shared `database-lib` constant (see §7 "Provider call patterns" and §8) |
 | `model` | provider model id |
 | `input` | JSON — the prompt/spec, Zod-validated at enqueue |
 | `status` | enum `queued \| running \| succeeded \| failed \| canceled` |
@@ -1147,10 +1147,56 @@ the API.
   illustrative only.
 - **Kind→provider compatibility matrix.** `storyboard`/`script` →
   `gloo` **or** `openrouter` (structured text via AI SDK `generateObject`);
-  `image`/`narration`/`music`/`video` → **`openrouter` ONLY** (Gloo has no
-  media modalities). Defined **once** as a shared `database-lib` constant and
-  enforced (**422**) at `POST /v1/ai/generations` **before** any row or
+  **`image` → `gloo` or `openrouter`**; `narration`/`music`/`video` →
+  **`openrouter` ONLY**. Defined **once** as a shared `database-lib` constant
+  and enforced (**422**) at `POST /v1/ai/generations` **before** any row or
   workflow is created (§2.8, §8).
+
+  **CORRECTION, 2026-07-28 (genesis-1 Inspector).** This document previously
+  said "Gloo has no media modalities" and put `image` in the openrouter-only
+  group. Half of that sentence is false, and the halves were separated by
+  measuring the live host rather than re-reading the docs:
+
+  - **`image` — Gloo CAN generate images.** Its catalogue carries 11
+    image-capable models (6 image-only, 5 text+image), and a real 1024x768
+    8-bit RGB PNG was generated from one and decoded, twice. The reason the
+    capability went unnoticed for four milestones is the ROUTING: image models
+    are unreachable through chat/completions, which answers `400 … does not
+    support text output and cannot be used with the Chat Completions API. Use
+    the POST /v2/responses endpoint instead` — and `/ai/v2/responses` is a
+    surface nothing in this system had ever called.
+  - **`narration`/`music`/`video` — genuinely absent, and now positively so.**
+    Zero catalogue entries match `audio|speech|tts|voice|narrat|music|video`,
+    and `/ai/v2/audio/speech`, `/ai/v2/audio/transcriptions` and
+    `/ai/v2/videos/generations` all answer **404** (route absent) rather than
+    405 (route exists, wrong method). Gloo's backend is FastAPI, so that
+    distinction is what makes these NEGATIVES evidence instead of an absence of
+    evidence. Requesting `modalities: ["text","audio"]` returns 200 with
+    `message.audio` simply missing, and invented model ids return `Unknown
+    model`. So openrouter-only is *correct* here, not merely cautious — and the
+    Inspector shows Gloo present-but-disabled with a plain reason rather than
+    hiding it.
+
+- **Faith alignment (`tradition`).** Gloo's chat and responses surfaces both
+  accept a top-level `tradition` body field taking exactly
+  `evangelical | catholic | mainline | not_faith_specific`. Measured by injected
+  system-prompt size: omitted and `not_faith_specific` both give 757 prompt
+  tokens; `catholic` 11253, `evangelical` 11289, `mainline` 11275. **There is no
+  `protestant` and no `orthodox`**, and — the trap — **the field is not validated
+  server-side**: every unrecognised value returns **200** and silently collapses
+  to the neutral baseline. There is no 422 to catch a typo, so the vocabulary is
+  enforced on OUR side (a Zod enum at the manifest boundary, an independent enum
+  at the wire boundary) and the wire value is never free text. The user-facing
+  word is **"faith-aligned"**, the design's own term — never "denomination".
+
+- **Per-model pricing exists on BOTH providers.** OpenRouter publishes
+  `pricing.prompt`/`.completion` per token and `pricing.image` per image (a
+  NEGATIVE value means variable/auto-priced and is not a price; a ZERO
+  `pricing.image` marks a "free" model that returns 500 in practice). Gloo
+  publishes `pricing.input|output.rate_per_1k_tokens` as decimal strings on
+  **106/106** catalogue entries. **Video is the exception: OpenRouter publishes
+  no video pricing at all**, so any cost estimate must degrade honestly there
+  rather than produce a number.
 
 ### Workflow inventory
 
