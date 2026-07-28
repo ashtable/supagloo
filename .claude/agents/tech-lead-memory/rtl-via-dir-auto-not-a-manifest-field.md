@@ -1,6 +1,6 @@
 ---
 name: rtl-via-dir-auto-not-a-manifest-field
-description: RTL scripture is honoured with dir="auto" in the editor, the preview AND the generated Remotion source — no language/direction field on ManifestScene, because preview and render are both Chromium and agree by construction
+description: RTL scripture is honoured with dir="auto" in the editor, the preview AND the generated Remotion source — no language/direction field on ManifestScene, because dir="auto" is a standardised algorithm (UAX#9 first-strong) that every browser engine implements identically, so the preview (the user's browser) and the render (headless Chromium) agree without being the same engine
 metadata:
   type: decision
 ---
@@ -17,9 +17,14 @@ design — a `language` or `direction` field on `ManifestScene` — was **reject
 | the GENERATED Remotion scene source | `supagloo-nodejs-dbos/src/remotion/templates.ts` (both `<p>`s) |
 
 **Why it beats a manifest field, not just why it is cheaper.** `dir="auto"` is the HTML
-first-strong-character bidi algorithm, and the studio preview (`@remotion/player`, the
-user's browser) and the render (`@remotion/renderer`, headless Chromium) are the **same
-engine** — so they cannot disagree about direction. That is the failure mode that matters
+standard's bidi first-strong-character determination (UAX#9 P2/P3) — a **specified
+algorithm, implemented identically by every browser engine**. The studio preview runs
+`@remotion/player` in the **user's** browser (which may be Safari or Firefox); the render
+runs `@remotion/renderer` in headless Chromium. They are **not** the same engine, and they
+do not need to be: what makes the preview and the MP4 agree is the standard, not a shared
+engine. (An earlier version of this note claimed they were the same engine. That was
+false — corrected 2026-07-28. The conclusion is unchanged; only its justification was
+wrong, and no code moved.) That is the failure mode that matters
 here; a hand-plumbed field would have had to be kept correct across four mirrors
 (db-lib `ManifestSceneSchema`, nextjs `lib/api/contracts.ts`, `manifest-json.ts`'s
 `canonicalizeManifest`, `templates.ts`) plus the UI `Scene` and the adapter both ways, and a

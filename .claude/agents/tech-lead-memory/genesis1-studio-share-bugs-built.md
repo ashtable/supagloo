@@ -17,7 +17,7 @@ touched at all** — no release chain.
 | 4 | the "daily recurring post" block deleted **and its whole backing model** — `PostingKey`, `StudioState.posting`, `TOGGLE_POSTING` | `reducer.ts` |
 | 5 | `Share to the gallery`, **disabled + UNCHECKED** (D2), not wired to the gallery endpoint | `ship-menu.tsx` |
 | 6 | `render-button` (`Render ▸`) right of Commit, calling the existing `startRender()` | `top-bar.tsx` |
-| 7 | Publish disabled when nothing is ahead of main | `lib/studio/top-bar-gates.ts` — see [[head-commit-sha-ahead-of-main-is-not-an-invariant]] |
+| 7 | Publish disabled when nothing is ahead of main **and while dirty** (see corrections) | `lib/studio/top-bar-gates.ts` — see [[head-commit-sha-ahead-of-main-is-not-an-invariant]] |
 
 ## Seams a later spec can use
 
@@ -53,6 +53,41 @@ Also: React's `react-hooks/set-state-in-effect` is an **error** (not a warning) 
 repo's eslint config, so a cascading dropdown cannot clear its dependent lists with
 `setState(null)` in an effect body — key each list by the selection that produced it and
 read it back only on a key match.
+
+## Corrections landed 2026-07-28 (the review chain's own findings)
+
+The seven items above shipped with five defects that a review pass found and fixed. They
+are amendments to THIS decision, not new ones:
+
+- **Publish is also gated on `dirty`.** Item 7 shipped gating only on "nothing ahead of
+  main" — but `publishVersionWorkflow` merges the version BRANCH into main, so publishing
+  over uncommitted edits ships a version that omits what is on screen. The check sits
+  AFTER `isRealProject` (the mock catalogue's Publish is clicked from an EDITED storyboard
+  by E-PUB4/E-SP3) and BEFORE `hasUnpublishedCommits` (after an edit both are true; only
+  "commit first" clears both). Reason string mirrors the Render gate's.
+- **`PUBLISH_REAL_DONE` no longer clears `dirty`.** It used to, which made the header read
+  "All changes committed" over unsaved work and re-enabled Render. A publish has no
+  information about the browser's uncommitted edits, so it must not assert one. Watch the
+  test shape: a reducer case that only ever feeds a CLEAN state cannot tell "carried
+  through" from "cleared" — U-R27 now drives it from a dirty state.
+- **A commit the server never accepted is `"commit_request_failed"`, not
+  `"commit_timeout"`.** `commitVersion` returns null for any non-2xx/unparseable/thrown
+  POST; a 422 `manifest_invalid` comes back in milliseconds. Routing that through
+  `commitOutcome(null)` named a failure mode that did not occur. The POLL branch keeps
+  `commit_timeout`, where it is true. Deliberately NOT done: surfacing the api's actual
+  reason (that needs `commitVersion`'s return type to change, churning four test mocks),
+  and gating `commit-button` on empty scripts (clearing a field to retype it is normal).
+- **`addSceneAfter` is total at length 0.** `canAddScene` is a CAPACITY check
+  (`length < MAX_SCENES`), so it says true on an empty storyboard, where the `?? ""`
+  fallbacks would emit the one `scriptText` value both mirrors reject (trap 1 above). It
+  now returns the same object. Do not rely on `studio-app.tsx`'s `<StudioEmpty />` guard —
+  that is a fact about a different file.
+- **The picker's failure advisory is last-write-wins.** There were three `setFailed(true)`
+  sites and no `setFailed(false)` anywhere, so one blip latched
+  "Couldn't reach YouVersion" for the session while the picker kept working — `failed`
+  gates ONLY the advisory; each select's `disabled` comes from whether its own options
+  exist. Each writer now sets it from the outcome it just saw. Deliberately NOT split per
+  level (languages/translations/passage) — that is message differentiation, declined.
 
 Related: [[rtl-via-dir-auto-not-a-manifest-field]],
 [[scaffold-merge-sha-fix-made-a-fresh-publish-impossible]],
