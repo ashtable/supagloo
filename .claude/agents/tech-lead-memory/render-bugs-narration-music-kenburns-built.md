@@ -26,8 +26,18 @@ what length the provider felt like returning.
 **Ken Burns.** `visualAssetKind` ("image"|"video", absent ⇒ image) discriminates still from
 clip. Stills get a `scale`/`translate` pan normalized over the scene's own frame count, with
 the variant chosen by `index % 4` — never randomness or a clock, because the generator is
-golden-pinned and re-run at render time. Clips get `<OffthreadVideo>`, closing a latent bug
-where a video asset was rendered through `<Img>`.
+golden-pinned and re-run at render time. Clips get `<OffthreadVideo>`.
+
+**`visualAssetKind` HAS NO PRODUCER — corrected 2026-07-27.** The `<OffthreadVideo>` branch
+*makes it possible* to close the latent "a video asset is rendered through `<Img>`" bug; it
+does not close it. The field is READ (`templates.ts`, `storyboard-video.tsx`) and PLUMBED
+through all four mirrors, and is written by nothing outside test fixtures — `setSceneVisual` /
+`IMAGE_GENERATED` write only `visualAssetKey`. So a generated video asset still renders
+through `<Img>` in production, and both tests that exercise the branch (U-T10, E-K2) drive the
+field explicitly. Wiring a producer is a FEATURE, deliberately not done in a bug-fix run.
+This is not a regression: the studio never requests a `video` generation, so no video asset
+can reach a scene today, and an `<Img>` pointed at an MP4 fails identically with or without
+the pan. Whoever wires video-to-scene owns setting the kind at the same time.
 
 ## Decisions worth remembering
 
