@@ -1280,19 +1280,37 @@ steps. Minted fresh per run, never persisted (§2.3).
    → `fetchAssetBytes` → `uploadAssetToS3` → `persistResult`.
 7. **`generateAudioWorkflow(generationId)`** — queue `ai-generation`; covers
    `narration` and `music`, both via OpenRouter (§9-Q2 resolved).
-   - **Narration (TTS):** `loadRequestAndCredentials` → `callSpeechEndpoint`
+   - **Narration (TTS):** `loadRequestAndCredentials` → one
+     `synthesizeNarrationScene:{sceneId}` step **per scene** (retries as
+     above) → `persistResult`. Each step calls the dedicated speech endpoint
      (`POST https://openrouter.ai/api/v1/audio/speech` — OpenAI Audio
      Speech-compatible: `model`, `input` text, `voice`, `response_format:
      "mp3"`, optional provider-dependent `speed`; the response is a **raw
      audio byte stream** — `audio/mpeg` body + `X-Generation-Id` header, not
-     JSON — buffered to the workspace; retries as above) →
-     `uploadAssetToS3` → `persistResult`. Recommendation (not a hard
-     requirement): prefer this dedicated endpoint over the chat-completions
-     audio-modality path (`modalities: ["text","audio"]`, which mandates
-     streaming and delivers base64 audio in SSE `delta.audio.data` chunks) —
-     that path is built for conversational voice replies, not batch
-     narration synthesis. Speech model discovery:
-     `GET /api/v1/models?output_modalities=audio`.
+     JSON) and uploads the bytes in the SAME step, so the audio never lands
+     in a DBOS checkpoint. One `AiGeneration` row, N assets: each clip goes
+     to `buildSceneNarrationAssetKey(projectId, generationId, sceneId)` and
+     the `{sceneId, assetKey, durationSeconds?}` list rides in
+     `resultJson.narration.scenes`; `resultAssetKey` holds scene 1's clip.
+     - **The dedicated endpoint is MANDATORY for narration, not a
+       preference.** An earlier revision of this section framed it as a
+       recommendation over the chat-completions audio-modality path
+       (`modalities: ["text","audio"]`, which mandates streaming and delivers
+       base64 audio in SSE `delta.audio.data` chunks). That framing was
+       wrong, and taking it as optional CAUSED the shipped narration bug: the
+       chat path is built for conversational voice replies, so the model
+       *answered* the verse instead of reading it. The speech endpoint has no
+       `messages` array, so a conversational reply is structurally
+       unreachable — that is the fix, not prompting.
+     - **Speech model discovery:**
+       `GET /api/v1/models?output_modalities=speech` (verified live: 15
+       models). This catalogue is **disjoint** from
+       `output_modalities=audio`, which lists the conversational
+       audio-modality chat models — the two are different catalogues, not
+       aliases. An earlier revision of this line said `=audio`.
+     - Music continues to use the chat-completions audio-modality path
+       below, because the music models have no entry in the speech
+       catalogue.
    - **Music:** same step shape; OpenRouter exposes music-generation-capable
      models, but the concrete model/endpoint is resolved at implementation
      time via model discovery — not assumed here.
