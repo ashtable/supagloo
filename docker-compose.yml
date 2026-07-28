@@ -235,6 +235,15 @@ services:
       # YOUVERSION_APP_KEY (the backends' name); nextjs's shorter YV_APP_KEY is a
       # pre-existing, documented divergence, bridged here.
       YV_APP_KEY: ${YOUVERSION_APP_KEY}
+      # The BFF's upstream. `lib/api/config.ts` defaults this to http://localhost:4000,
+      # which is correct for `next dev` ON THE HOST (where api is published on :4000) and
+      # is exactly wrong INSIDE this network, where localhost is the nextjs container
+      # itself — nothing listens on :4000 there, so every forwardToApi() call came back
+      # 502 {"error":"upstream_unreachable"} and the whole app rendered signed-out/unlinked.
+      # The service name is the only address that resolves here; `lib/config/env.ts`'s own
+      # SUPAGLOO_API_URL message already names this exact value. The e2e lanes never caught
+      # it because they run `next dev` on the host, where the default happens to work.
+      SUPAGLOO_API_URL: http://api:4000
       # DO NOT add SECRETS_ENCRYPTION_KEY here. nextjs has no DB and no S3 access and never
       # calls encryptSecret/decryptSecret (design-delta §5.1:719-727); its boot validator
       # (`lib/config/env.ts`) REJECTS the variable's presence and the container will refuse
