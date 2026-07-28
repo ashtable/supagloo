@@ -77,7 +77,7 @@ was verified at — and if it names shas, they must equal root's gitlinks **righ
 a submodule pointer without re-running §2 and the gate goes red, which is the entire point.
 
 ```
-COMMITTED-CONFIG VERIFIED AT: 43106f3d73a0afca348bf90ff5a5ad53d0f37b6d 03e7853577622fa42f6dff0a3393434e0f5e5407 c2abd4ab8c51f61a552af63dbf94f24a98ccfa7c
+COMMITTED-CONFIG VERIFIED AT: not-yet
 ```
 
 To record a verified run, replace `not-yet` with the three shas, space-separated, e.g.
@@ -99,3 +99,20 @@ no build-time placeholder in the response; that is the case which fails if the n
 predates work-order item 8. The `dbos` container reported the `maintenance` queue at
 `worker_concurrency=1`, confirming the committed context carries row 42's registry entry rather
 than a stale image.
+
+**Reset to `not-yet` 2026-07-27.** Two later releases bumped all three gitlinks —
+first to `7224028`/`b281edb`/`8e39df8` (the compose `SUPAGLOO_API_URL` fix, the JWKS
+sign-in verifier and the public-origin BFF redirects), then to
+`25bc130`/`81a8f7a`/`45e8901` (connecting an installation the user already has) — and
+§2 was NOT re-run for either. Every build behind those releases used
+`docker-compose.override.yml`, i.e. the SIBLING checkouts, so the committed
+configuration at these gitlinks is untested exactly as §1 describes.
+
+The first of those two releases also left this marker naming the PREVIOUS gitlinks, so
+the gate was red on `main` and silently so: root's unit suite was run before the
+submodule bumps were staged, and `committedGitlinks()` reads the index — so the guard
+was evaluated against the pre-bump state and passed. Staging the bump before running the
+suite is what makes this gate mean anything, and it is the same ordering that
+`supagloo-nodejs-dbos`'s `dockerfile-database-lib-pin` test enforces.
+
+§2 must run before these gitlinks are deployed.
