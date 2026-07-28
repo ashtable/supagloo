@@ -41,6 +41,24 @@ turn to a conversational audio model returns spoken COMMENTARY: *"It sounds like
 quoting from the Book of Genesis…"* — 16.4 s for a 3.5 s verse. Same verse through
 `/audio/speech` = 3.528 s, verbatim.
 
+**It recurred one day later, in the opposite direction.** The genesis-1 model-catalogue
+endpoint (`api/src/ai/model-catalogue-service.ts`, 2026-07-28) read ONLY
+`?output_modalities=speech` and stamped every entry `kinds: ["narration","music"]`, on a
+JSDoc claiming `generateAudio` calls the speech endpoint for both kinds. It does not — it
+dispatches by the row's kind: narration → `requestSpeech` → `/api/v1/audio/speech`, music →
+`requestMusic` → the streaming `/api/v1/chat/completions` (`generate-audio.ts:151` / `:186`).
+So the music picker offered 15 batch-TTS ids and choosing any of them sent a speech-only
+model to chat/completions. **Fixed by a fourth catalogue read** (`?output_modalities=audio`,
+re-verified live 2026-07-28: still exactly those 4 models, both Lyria included) with the
+speech entry narrowed to `["narration"]`. The e2e that should have caught it asserted only
+`values.length > 0`; it now asserts each select contains this deployment's own default id
+and that the two audio selects are disjoint.
+
+Two derived rules worth keeping: **an "is it populated?" assertion is not a "is it the RIGHT
+catalogue?" assertion**, and both Lyria models publish `{prompt:"0", completion:"0"}`, so a
+music price must be treated as UNPRICED — rendering `$0.0000` would tell the user a paid
+generation is free.
+
 **The lesson, again:** this file's own comments were the authority nobody re-checked. See
 [[youversion-signin-live-contract-facts]] for the same shape. Re-probe before trusting any
 provider comment here, however emphatically it is worded.

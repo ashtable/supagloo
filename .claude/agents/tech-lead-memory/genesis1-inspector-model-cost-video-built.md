@@ -77,10 +77,39 @@ forbidden ([[in-flight-dblib-e2e-constraint]]). Rather than accept a red window:
   db-lib's export. The RULE ("filter by whatever the matrix says") is pinned in the api; the
   VALUE (`image: ["gloo","openrouter"]`) is pinned in db-lib, where it is green now.
 
-**The one real in-flight gap:** until db-lib is released and the gitlinks bumped, the api's
-`AI_PROVIDERS_BY_KIND.image` still reads `["openrouter"]`, so `GET /v1/ai/models` filters
-Gloo image models out at runtime. Unit-green by construction; the real-lane `E-MC1` is the
-thing that would catch it.
+**There are TWO in-flight gaps, not one** (corrected 2026-07-28 by the Step 7 review — the
+note previously named only the first and called it "the ONE real gap"). Both close only when
+the api's AND dbos's gitlinks move; **both must move in the same release.**
+
+**Gap #1 — the matrix.** The api's `AI_PROVIDERS_BY_KIND.image` still reads
+`["openrouter"]`, so `filterByMatrix` reduces every Gloo image model to `kinds: []` and
+`GET /v1/ai/models` drops them. Downstream that makes `providerOptionsFor` return
+`available:false / "No models available"` and renders `ai-provider-image-gloo` disabled.
+
+**Gap #2 — the api STRIPS `aiSettings` on every commit and every read.** Larger, and it was
+missed because the four-mirror rule does not name this boundary. The api validates the
+manifest DTO with the NESTED db-lib's `ProjectManifestSchema`, which is a plain `z.object`
+(Zod strips unknown keys) with no `aiSettings` — and then forwards the PARSED value, not the
+request:
+
+- `jobs/project-jobs-service.ts:421` `safeParse(req.manifest)` → `:462` enqueues
+  `parsedManifest.data`. Every commit.
+- `manifests/manifest-service.ts:102` returns `parsed.data`. Every read.
+
+So until the bump, **D2's persistence half has never once executed** end to end, and the
+only e2e that can see it is `E-MC5` (commit + reopen).
+
+**⇒ THE FIFTH MIRROR.** The four-mirror rule names db-lib's schema, dbos's
+`canonicalizeManifest`, nextjs's `contracts.ts` and nextjs's `manifest-adapter.ts`. It does
+NOT name **the api's manifest DTO validation**, which is a strip point of exactly the same
+kind: a `z.object` that parses the manifest and forwards its own output. Any future manifest
+field must walk five boundaries, and this is the one with no test in any repo that would go
+red — the api's own suites build their fixtures from the same schema that does the stripping.
+
+**Do not misattribute the e2e blast radius.** Only `E-MC5` is blocked by the strip. `E-MC1`,
+`E-MC3` and the Gloo half of `E-MC4` are pure in-memory flows blocked by **gap #1**, the
+matrix. Conflating the two sends the next reader looking for a persistence bug that is not
+there.
 
 ## The four mirrors, again
 
