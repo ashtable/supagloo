@@ -36,8 +36,38 @@ marked `DELETE AT THE db-lib BUMP`. Treat anything not a non-empty string as abs
 than forwarding it: an unknown provider voice is a hard 400, and degrading to the default
 beats failing the generation.
 
-**The manifest half still walks all five mirrors** ([[the-manifest-has-five-mirrors-not-four]])
-and is genuinely blocked until the bump. Only the WIRE half escapes. Say which half you mean.
+**The manifest half still walks all five mirrors** ([[the-manifest-has-five-mirrors-not-four]]).
+Only the WIRE half escapes. Say which half you mean.
+
+### "Blocked until the bump" is the WRONG WORD for the manifest half — it is ERASED ON COMMIT
+
+Corrected 2026-07-29 after measurement. "Blocked" reads as *the value does not arrive yet*,
+which is benign and wrong. What actually happens is worse and is a live data-loss bug:
+
+- The scaffold seeds the field **past the schema** (`api/src/jobs/project-jobs-service.ts`
+  casts via `seedManifestScripture`; `dbos` `scaffold-project.ts` writes `payload.manifest`
+  with no runtime parse), so a fresh repo **already contains** the value.
+- Every read/write boundary that has not been updated then **deletes it**: the studio's
+  `ManifestResponseSchema.safeParse` strips it on read, and `serializeManifest` — which
+  builds its result field-by-field with no `...base` spread — omits it on write. The next
+  Commit writes the user's own repo back without it.
+
+So the honest sentence is **"erased on commit"**, never "does not persist end-to-end" and
+never "blocked until the bump".
+
+### And "it heals at the bump" is false for the nextjs mirrors
+
+nextjs **never imports `@supagloo/database-lib`** — one repo-wide reference, the comment at
+`lib/api/contracts.ts:8`; the vendored submodule is excluded from `tsconfig.json` and
+`eslint.config.mjs`. Its two mirrors (`lib/api/contracts.ts`, `lib/studio/manifest-adapter.ts`)
+are **hand-written copies that no gitlink can fix**, and bumping nextjs's own db-lib pin
+buys literally nothing. `scripture`'s nextjs mirrors were closed by hand-written code in
+this run, not by the release; only the ROOT gitlink to that nextjs commit carries the fix.
+`narratorVoice.voiceId` is the contrasting case — five complete mirrors, so it genuinely
+does heal once db-lib, api and dbos move.
+
+Rule: before writing "heals at the bump" about any manifest field, check whether each
+mirror **imports** db-lib or **copies** it. Only importers heal.
 
 ## The api's route-level version of the same move
 

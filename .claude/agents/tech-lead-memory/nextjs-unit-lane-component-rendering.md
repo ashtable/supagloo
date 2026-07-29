@@ -49,5 +49,23 @@ Mock `@youversion/platform-react-ui` itself when `sign-in-button` is anywhere in
 (it is, via `signin-prompt`). `<Modal>` portals to `document.body`, so dialog queries root
 there, not at the container.
 
+## Trap 3 — a REMOUNT proves nothing about a dependency array
+
+Added 2026-07-29. `workspace-grid-gating.test.tsx` U-A8 claimed "the grid fetches once the
+server session arrives, with no reload" and drove it as
+`mount → unmount → change the mock → mount again`. A fresh mount runs every effect
+unconditionally, so that sequence passes **identically with the broken deps** it exists to
+catch. Measured: reverting `[mounted, isMock, serverUserId]` to `[mounted, isMock]` left
+the whole 1253-test lane green.
+
+Whenever the claim is *an effect fires because a VALUE changed*, drive **one mounted tree**:
+`support/render.tsx` now returns a `rerender(element)` that renders into the same root, so
+the fiber survives and only changed deps re-run. Two assertions make it airtight —
+`expect(byTestId(container, id)).toBe(theNodeCapturedBefore)` (no unmount happened) and a
+same-value re-render that must NOT refetch (the array is doing work, not the render).
+
+Same shape as [[a-test-that-claims-a-class-must-drive-the-class]]: the setup was quietly
+larger than the property, so the property was never under test.
+
 Related: [[gallery-ui-built]], [[vite-cache-poisons-mutation-testing]],
 [[a-test-that-claims-a-class-must-drive-the-class]].
