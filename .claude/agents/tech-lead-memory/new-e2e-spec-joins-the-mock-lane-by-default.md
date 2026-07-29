@@ -25,3 +25,24 @@ orphan assertion.
 
 The guard catches both, which is why it exists — but read its failure message before
 assuming which edit is missing.
+
+## No mock-lane spec can EVER reach an AI control (measured 2026-07-29)
+
+Before planning a mock-lane spec, check whether the surface is behind `aiEnabled`.
+
+`scene-inspector.tsx` computes `const aiEnabled = Boolean(project.manifest)`, and the mock
+catalogue deliberately has **no manifest** — `lib/studio/project.ts` says so in a comment:
+*"the manifest's PRESENCE is the studio's real-vs-mock mode signal"*, and
+`app/studio/[id]/page.tsx` hands `findStudioProject(id)` straight to `<StudioApp>` on the
+demo path. So `generate-scene-video`, `visual-card`, `narration-card`, the scripture picker
+and every other AI testid **do not exist in the mock lane at all**.
+
+This killed a planned `studio-video-warning.e2e.ts` (mock lane, 20b's confirmation dialog):
+its very first act — click `▶ Generate video` — has nothing to click, and no amount of
+seeding fixes it, because the absent manifest *is* the mock lane. The zero-egress guarantee
+and the byte-exact 13b inspector assertions both depend on that gate staying shut.
+
+The right home for "this dialog opens and nothing is spent" is a **jsdom mount test** under
+`tests/unit/` with a real-project fixture (`tests/unit/studio-lock.test.tsx` does exactly
+this for both 20a and 20b) — same zero egress, and it can drive the state a mock e2e cannot
+construct. See [[nextjs-unit-lane-component-rendering]].
