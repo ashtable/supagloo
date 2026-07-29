@@ -68,6 +68,198 @@ same red/gold accent used sparingly for active states, live indicators, and prim
 
 ---
 
+## Turn 20 — Generation guardrails (id `t20`)
+
+*Added 2026-07-29. Author's turn title: "Generation guardrails — 20a: studio-wide busy state that
+locks the editor during any generation · 20b: video-generation cost & time confirmation".
+**Both options are BUILT.***
+
+**Skin.** Zero `--sg-*` token usages. Like 19a/19b this is a THIRD dark palette, near Wilderness
+but consistently a few units off (`#17120f` vs `--ws-bg #16110d`, `#c0392b` vs `--ws-rust #c6552b`,
+`#d9a05b` vs `--ws-amber #e6a43b`). Geometry taken literally, colour translated through
+`app/studio/ws-tokens.ts` — the house rule recorded at `scripture-picker.tsx:56`.
+
+### 20a — studio busy state
+One blocking scrim over the whole editor for ANY generation kind, an in-place shimmer on the
+generating scene, and one status card (`STUDIO LOCKED · GENERATING` / headline / `kind · model ·
+provider` / the scene's own script line / Cancel).
+
+- **It reverses a documented decision, deliberately.** `studio-app.tsx` recorded *"There is NO
+  blocking overlay"* because popover dismissal depends on pointerdown reaching other triggers. The
+  reversal is reconciled in the REDUCER — `GENERATION_BEGIN` now closes the menus — rather than by
+  fighting the dismiss logic with a scrim.
+- **The busy predicate is NEW and SEPARATE.** `activeGeneration()`/`isStudioLocked()` cover all six
+  slots (image, video, narration, music, script, storyboard). `isPreviewGenerating` is left exactly
+  as it was: it asks *"is the visible frame about to change?"* and scrims the Player only. Widening
+  it would have changed the Player scrim's meaning as a side effect of adding a lock.
+- **Cancel SHIPS.** `POST /v1/ai/generations/:id/cancel` had existed in the api since task #31 with
+  no client path at all (`app/api/ai/generations/[id]/route.ts` exported `GET` only, and
+  `runGeneration` kept the id in a local closure). Three additions closed it: a BFF cancel route,
+  `GENERATION_STARTED` retaining the id on the slot, and a `cancelGeneration()` driver.
+- **NOT built, because the figure invents them:** `"Usually 10–20s."` (no telemetry exists, and it
+  is wrong for video by an order of magnitude — 20b itself says minutes) is replaced by a per-kind
+  hint; the "rotating activity phrase" set is unspecified anywhere, so the status line prints only
+  the half that is backed — the scene's own `scriptText`.
+- **NO DESIGN EXISTS** for the post-cancel, cancel-failed, generation-failed or queued states. The
+  409 `generation_not_cancelable` is real and reachable; the lock deliberately STAYS UP on it (an
+  invented line, `"Too late to cancel — finishing up."`), because handing the editor back seconds
+  before a result lands is the race the lock exists to prevent.
+
+### 20b — video-generation confirmation
+Fires before any video generation; the CHEAP path is the primary (gradient) button and the
+expensive one is the outline. **That inversion is the screen** — do not "fix" it to match the
+gradient-means-affirmative convention used everywhere else.
+
+- `"Use a still image instead"` needs **no new endpoint**: it is `rerollVisual(sceneId)`, which
+  already posts `kind: "image"`, and Ken Burns is applied at render time to any
+  `visualAssetKind: "image"`.
+- **Its prices are the loudest flag in the deck.** `lib/studio/cost-estimate.ts` returns
+  `unpriced("Video pricing is not published by the provider")` BEFORE reading any pricing, and 19a
+  agrees with the code (`"Provider publishes no pricing."` / `—`). The resolution: a separate,
+  clearly-labelled, DATED advisory constant (`lib/studio/video-advisory.ts`) read by this dialog and
+  nothing else, fenced by a source-level test that fails if `cost-estimate.ts` so much as mentions
+  it.
+- **Where the drawn numbers are not followed.** `$0.50` ships (it IS the measured figure).
+  `2–6 MIN` does **not** — the one live `wan-2.7` run took **8 min 5 s**, so `~8 min` ships instead.
+  `$2.00`/`24 minutes` are computed from the real scene count. `$0.003`, `~15 seconds` and
+  `"roughly 1/150th the cost"` are **omitted**: the first is not the number for the shipped Gloo
+  default, the second has no telemetry, and there is no ratio when one side is unpriced.
+- `#7fbf8f` (the `RECOMMENDED INSTEAD` green) has **no Wilderness token** and the palette has no
+  green at all. Rather than mint one for a single strip, the recommendation is carried by the amber
+  section colour plus the button hierarchy — which is where the design's own emphasis lives.
+- `"Don't warn me again for this project"` had nowhere to persist. It lives in `localStorage` keyed
+  by project id; a manifest field would commit a UI preference into the user's GitHub repo.
+- **`71e32a9`'s availability gate is a DIFFERENT gate and 20b does not supersede it.** That one asks
+  "can this generation run at all?"; 20b asks "should you spend this?". They compose — 20b only ever
+  fires when video is already runnable. Both ship.
+
+---
+
+## Turn 19 — Studio inspector · regrouped (id `t19`)
+
+*Added 2026-07-29. Author's turn title: "Studio inspector · regrouped — each prompt now owns its
+provider/model/cost controls · Delete scene moved to the top · narration switches from a free-text
+prompt to a curated per-model voice list". **Both options are BUILT**, with the scope trims below.*
+
+**Skin.** Zero `--sg-*`. Same third dark palette as 20a/20b — geometry literal, colour translated.
+
+### 19a — inspector, regrouped
+Three prompt-owning cards (VISUAL / NARRATION / MUSIC BED), each with a scope pill from the closed
+`this scene` / `whole video` vocabulary; Delete scene promoted into a sticky header beside the scene
+name and count; the standalone `GENERATION · whole video` section DISSOLVED and redistributed —
+image + video under the visual prompt (with FAITH ALIGNMENT inside the image block), the speech
+model under narration, the music model under the music bed.
+
+- **The regroup is gated on `aiEnabled` (a real project).** The mock catalogue keeps the
+  byte-for-byte 13b inspector, because `studio.e2e.ts` anchors ~30 exact strings from it and the
+  mock lane's zero-egress guarantee depends on the AI surface never mounting. The header and the
+  Delete relocation are gated too, for the same reason.
+- **`AiSettingsPanel` was made splittable rather than rewritten** — it takes `kinds`, a `heading`
+  and `includeFaithAlignment`, and is mounted once per card. Every per-kind seam (`ai-kind-*`,
+  `ai-provider-*`, `ai-model-*`, `ai-cost-*`, `faith-alignment`) survives the move unchanged, which
+  is what keeps the real-lane specs that drive them working.
+- **The scope pill scopes the PROMPT, not the model selector.** 19a draws the model pickers inside a
+  card tagged `this scene`, but `AiGenerationSettingsSchema` records that model choice is
+  project-level and that going per-scene is a manifest migration against an explicit decision. The
+  model sub-block therefore keeps its `· whole video` qualifier, so the co-location cannot be read
+  as per-scene scope.
+- **SCRIPT stays EDITABLE.** 19a draws it as a static `<div>`; that is its resting state, not a
+  removal. Dropping the editor would remove the only way to fix generated script text, and it is the
+  primary dirty seam the whole Commit/Publish machinery depends on. The logical
+  `borderInlineStart`/`paddingInlineStart` are kept — the figure's physical `border-left` regresses
+  RTL.
+- **`Link ▸` survives.** It is not drawn anywhere in 19a, and it is the only affordance for
+  "provider not connected".
+- The `→ AI` chip is replaced by the scope tag — a deliberate deletion; the gold label still marks
+  the section as AI-driven.
+
+### 19b — curated voice list
+Replaces the free-text narrator descriptor with a per-model list, a filter box, four single-select
+category chips and a `RECOMMENDED` badge.
+
+- **The premise is verified true against shipped code.** `narratorVoice.description` was written,
+  validated, persisted to jsonb, committed to git, round-tripped through five schema mirrors and
+  snapshotted into the gallery — and read by ZERO provider-facing code. Every project narrated in
+  the literal `"alloy"`.
+- **There is NO voice-enumeration API at any provider** (verified live 2026-07-29), so a curated
+  hardcoded table is the only option. It lives in `nextjs/lib/studio/speech-voices.ts` — the one
+  repo that reads it. The manifest and the generation request carry a resolved provider `voiceId`,
+  so dbos is a pure pass-through and needs no copy. **Do not invent a `GET /voices` endpoint.**
+- **19a says "8 voices"; 19b draws six.** Both are right: the Orpheus vocabulary really is eight
+  (`leah` and `zoe` are the two the figure did not draw). The count is DERIVED from the catalogue
+  and never printed as a literal.
+- **The nearest-match remap is the load-bearing part.** Without it, switching the speech model would
+  leave a voice id the new model has never heard of on the manifest and the next narration
+  generation would be a hard provider 400 — the feature breaking the thing it was added to fix.
+- **NOT built (settled scope):** the per-row `♪▶/❙❙` audio preview (needs sample assets, storage and
+  provider spend per voice per model) and the `PACE 0.92×` slider. PACE has no backing parameter at
+  all — `RequestSpeechArgs` is `{modelId, input, voice?}` and `media-client.test.ts` pins the
+  request body to `{model, input, voice, response_format}` with an explicit assertion that no other
+  field is carried. The figure's HTML comment also mentions pitch; that is undesigned and not built.
+- 19b's header prints `orpheus-3b`; the shipped tag prints the FULL model id — hand-shortening per
+  model is a rule nobody can apply consistently.
+
+---
+
+## Turn 18 — Scripture picker moves into New project (id `t18`)
+
+*Added 2026-07-29. Author's turn title: "the YouVersion language / translation / book / chapter
+pickers move out of studio and become step 2 of the New-project wizard (13a), so the passage is
+fetched before the storyboard is generated". **18a is BUILT with the trims below; 18b is NOT.***
+
+**Skin.** `--sg-*` token usages: **t18 = 80** (against 0 in t19 and t20). A clean split — 18a/18b
+land on the site-skinned wizard, so their colours are used **LITERALLY**, with no translation.
+
+**`13a` in t18's title is an `<a href="#13a">` cross-reference, not a revision.** t18 contains
+exactly two figures. That matters, because 13a was therefore never redrawn for the flow it now sits
+in — see F1 below.
+
+### 18a — new project, step 2 "Choose scripture"
+Four cascading pickers in a `1fr 1fr` grid, a repo recap strip with `Change`, and a live
+gold-tinted passage preview. The wizard becomes **four** steps: repo → scripture → scaffold → ready.
+
+- **F1 — 13a's copy was stale the moment this landed, and was fixed as collateral.** Its eyebrow
+  still said `"NEW PROJECT · STEP 1 OF 3"` with a 33% rail, and its CTA still said
+  `"Scaffold into this repo →"` — which step 1 no longer does. Now `STEP 1 OF 4`, 25/50/75/100, and
+  a step-1 CTA of `"Choose scripture →"` (**an invention** — NO DESIGN EXISTS for the new string).
+- **F2 — 18a's own CTA is a promise the contract cannot keep, and is NOT shipped.** It reads
+  `"Generate storyboard →"`, but storyboard generation needs a project that already exists with a
+  committed manifest (`generateStoryboard()` short-circuits on `!project.manifest`, and
+  `POST /v1/ai/generations` takes a `projectId`). The wizard PERSISTS the passage; generation stays
+  in the studio.
+- **F3 — the verse RANGE is NOT built.** 18a selects verses 1–4 and offers `"Whole chapter"`. A
+  range is a **constructed** usfm (`PSA.121.1-PSA.121.4`), and `contracts.ts` records that
+  constructing one was deliberately closed as residual risk: *"`passageId` is ECHOED, never
+  constructed."* Nothing has verified a range form against the live host. Ships at CHAPTER
+  granularity, echoing the chapter's own `passageId`. 18a's `"each verse becomes a scene"` info line
+  goes with it — under the settled scope that claim would be false here.
+- **F4 — the error state is undesigned, and the shipped studio copy no longer fits.**
+  *"Couldn't reach YouVersion — type the verse into the script instead."* is nonsensical in the
+  wizard: there is no script yet and no project to put one in. New copy, with the `null` (failed) vs
+  `[]` (genuinely none) tri-state preserved.
+- **Where the passage LIVES: a new optional `ProjectManifest.scripture` block**, not a synthesized
+  first scene. `ManifestSceneSchema` requires `scriptText`/`visualPrompt`/`name`/`durationSeconds`,
+  so seeding a scene would mean inventing generated content the user never asked for, committing it
+  to their repo, and having `STORYBOARD_GENERATED` delete it on the very next action. It does NOT
+  carry the passage TEXT — third-party licensed content, committed into a possibly-public repo, and
+  re-fetchable from `passageId`.
+- `createdFrom: "passage"` needed **no schema change**: the enum has carried it since task #7 and
+  the api rejects only `"import"` on this path.
+
+### 18b — the picker lists, open
+Four searchable/grouped popovers replacing the native selects. **NOT BUILT — recorded deviation.**
+Searchable filtering, canon grouping, chapter counts, abbreviation badges and a 6-column chapter
+grid are all new controls, and none of them answers a problem the cascade has. The shipped pure
+selection model (`lib/studio/scripture-picker.ts`) and the six BFF fetchers are reused verbatim
+behind native `<select>`s.
+
+**F5 (honoured where it applies):** 18b hardcodes `"BOOK · 66"`, `"LANGUAGE · 1,900+"` and
+`"CHAPTER · PSALMS 1–150"`. `BibleBookRef.canon` is a per-TRANSLATION string (measured: 27 books in
+TCENT, 80 in engWEBUS), so none of those counts is a property of the data. Everything the shipped
+step prints is interpolated from the response.
+
+---
+
 ## Turn 17 — Creator profile + gallery states (id `t17`)
 
 *Added 2026-07-26. Author's own turn title: "Creator profile + gallery states — 17a: a creator's

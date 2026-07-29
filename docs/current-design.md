@@ -5,7 +5,9 @@
 depended on; **gallery + DBOS-lane-isolation pass 2026-07-26** (plan rows 39/40/41
 shipped, so ten "the gallery does not exist" assertions were false; the api/dbos e2e
 lanes gained a per-lane DBOS system schema, closing the "stop the Compose `dbos`
-container" precondition). Describes the system AS IT EXISTS TODAY in the code, not
+container" precondition); **seven-feature pass 2026-07-29** (design turns 18/19/20 —
+see §2.4a for the studio/wizard surface, which the previous revision described one
+design cycle behind). Describes the system AS IT EXISTS TODAY in the code, not
 the intended end state.*
 
 ## 1. Overview
@@ -205,6 +207,71 @@ while real-stack Stagehand specs use the extended `?seed=` seam instead (§5).
 
 **Deploy**: multi-stage Dockerfile; Railway builds `main` and serves
 https://supagloo.com/ (the UI is the only deployed service today).
+
+### 2.4a The studio + New-project surface, as of 2026-07-29 (turns 18/19/20)
+
+The previous revision of this document described the studio one design cycle behind.
+What is there now:
+
+**New-project wizard — FOUR steps** (`lib/project-wizard/new-project-model.ts`):
+`configure → scripture → scaffolding → ready`, rail 25/50/75/100, eyebrows `… OF 4`.
+Step 1's CTA advances (`"Choose scripture →"`) rather than scaffolding; the per-tab
+`Create & scaffold →` / `Scaffold into this repo →` labels moved to step 2, where they
+became true. Step 2 (`app/_components/project-wizard/scripture-step.tsx`) is a
+wizard-skinned sibling of the studio picker: it reuses `lib/studio/scripture-picker.ts`
+and the six BFF fetchers verbatim and re-skins to `--sg-*`. The picked passage travels on
+**both** submit paths — `POST /api/projects` directly, and through the create-new-repo
+tab's `localStorage` handoff across the OAuth round-trip — with
+`createdFrom: "passage"`, and is seeded into the scaffolded manifest as
+`ProjectManifest.scripture`. **The mock (`?mock=`) lane does not gate its scaffold on a
+passage**: it makes zero network egress by design, so YouVersion is unreachable there and
+the demo flow would otherwise be un-completable.
+
+**Studio inspector — regrouped, real projects only.** Three prompt-owning cards
+(`visual-card` / `narration-card` / `music-card`) with `this scene` / `whole video` scope
+pills; Delete scene in a sticky header (`inspector-header`, with `scene-name` and a
+derived `SCENE nn OF NN`); the standalone `GENERATION` section dissolved into the cards.
+`AiSettingsPanel` now takes `kinds` / `heading` / `includeFaithAlignment` and is mounted
+three times, so every `ai-kind-*` / `ai-provider-*` / `ai-model-*` / `ai-cost-*` /
+`faith-alignment` seam is unmoved. **All of it is gated on `aiEnabled`** — the mock
+catalogue keeps the byte-for-byte 13b inspector, because `studio.e2e.ts` anchors ~30 exact
+strings from it and the mock lane's zero-egress guarantee depends on the AI surface never
+mounting.
+
+**Narrator voice — actually reaches the provider.** The free-text descriptor is replaced
+by a curated per-model list (`lib/studio/speech-voices.ts`, `voice-list`), with
+nearest-match remap on a speech-model change, a filter box, four single-select category
+chips and a `RECOMMENDED` badge. A resolved provider `voiceId` is persisted on
+`narratorVoice.voiceId` and sent TOP-LEVEL on the narration generation input (a sibling of
+`voice`, because `GenerateNarrationInputSchema` is `NarrationSpecSchema.passthrough()` and
+a key nested inside `voice` would be stripped). dbos honours it at **both** synthesis
+sites — `generate-audio/synthesize.ts` and `workflows/render/audio.ts` — which previously
+both hardcoded `DEFAULT_NARRATION_VOICE`. No audio preview and no PACE control: PACE has
+no backing request parameter at all.
+
+**Generation guardrails.** `activeGeneration()` / `isStudioLocked()` (`lib/studio/reducer.ts`)
+cover ALL six generation slots and drive a studio-wide blocking lock (`studio-lock`);
+`isPreviewGenerating` is unchanged and still scrims the Player only. `GENERATION_BEGIN`
+closes the popovers, which is how the documented "there is NO blocking overlay" decision is
+reversed without fighting the pointerdown dismiss logic. Cancel is live end to end via a
+new BFF route `POST /api/ai/generations/[id]/cancel`; a 409 `generation_not_cancelable`
+keeps the lock UP. `▶ Generate video` now opens a confirmation
+(`video-warning-dialog`) whose advisory cost/time come from a dated constant
+(`lib/studio/video-advisory.ts`) that is fenced by a source-level test from ever reaching
+`cost-estimate.ts`.
+
+**Presigned previews no longer die at 300 s.** `presignDownload` returns
+`{url, expiresAt}` (it used to discard the expiry on one line), the storyboard carries
+`*UrlExpiresAt` for all four presigned surfaces, and a 30 s timer in `StudioProvider`
+re-signs anything within 15 s of expiry via `refreshStalePresigns`, with a bounded
+per-target failure ledger. `SET_SCENE_VISUAL_URL` — which had no production dispatcher at
+all — is the seam it writes through.
+
+**Session bootstrap.** The sign-in exchange no longer depends on the vendored SDK's
+`useMemo(…, [])` access token, which is frozen `null` on the OAuth callback load
+(`lib/session/bootstrap.ts`). `SessionContextValue` gained `serverUserId`; the workspace
+project grid keys its fetch on it rather than on `mounted` alone, and `signOut()` resets
+`connections`.
 
 ### 2.5 `supagloo-nodejs-api` — Fastify CRUD API (real)
 
