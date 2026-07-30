@@ -39,14 +39,29 @@ const GATE_DOC = resolve(ROOT, "docs/release-gate.md");
 const SUBMODULES = ["supagloo-nextjs", "supagloo-nodejs-api", "supagloo-nodejs-dbos"] as const;
 
 /** Root's committed gitlink for each code submodule, from the index — not from the checkout. */
+/**
+ * The gitlinks as they stand in the INDEX — deliberately not `git ls-tree HEAD`.
+ *
+ * This read is the whole gate. `ls-tree HEAD` answers "what did the last commit pin?",
+ * which is the wrong question: it goes red only AFTER a bump is committed, so the
+ * intended workflow — stage the bump, run the suite, discover the recorded SHAs are
+ * stale — silently passed. Measured on 2026-07-29: both the nextjs and api gitlinks were
+ * staged at new commits while the marker still named the old ones, and the suite was
+ * green. The doc had described the index behaviour for weeks; only the code disagreed.
+ *
+ * `ls-files -s` reads the index, so `git add <submodule>` is enough to arm the guard and
+ * you find out before the commit rather than after it. Same ordering rule the dbos repo's
+ * `dockerfile-database-lib-pin` test enforces.
+ */
 function committedGitlinks(): Record<string, string> {
-  const out = execFileSync("git", ["ls-tree", "HEAD", ...SUBMODULES], {
+  const out = execFileSync("git", ["ls-files", "-s", "--", ...SUBMODULES], {
     cwd: ROOT,
     encoding: "utf8",
   });
   const map: Record<string, string> = {};
   for (const line of out.trim().split("\n")) {
-    const m = /^\d+ commit ([0-9a-f]{40})\t(.+)$/.exec(line);
+    // `<mode> <sha> <stage>\t<path>` — mode 160000 is a gitlink.
+    const m = /^160000 ([0-9a-f]{40}) \d+\t(.+)$/.exec(line);
     if (m) map[m[2]] = m[1];
   }
   return map;
@@ -69,8 +84,12 @@ describe("RX-9 — the committed-configuration gate exists and is written down",
     expect(from, "docs/release-gate.md has no `## 2. The procedure`").toBeGreaterThan(-1);
     expect(to).toBeGreaterThan(from);
     const d = whole.slice(from, to);
+    // Step 2 used to be "move the override aside". The override is RETIRED (§1) — Compose
+    // builds from the submodules unconditionally — so the step is now a check that no local
+    // copy has reappeared. It is still a step rather than a deletion precisely because the
+    // file is gitignored: nothing in review can see one, so the procedure has to look.
     const steps = [
-      /move\s+`?docker-compose\.override\.yml`?\s+aside/i,
+      /confirm\s+no\s+`?docker-compose\.override\.yml`?\s+exists/i,
       /--no-cache/,
       /npm run test:e2e/,
       /E-BH8/,

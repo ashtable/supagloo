@@ -722,6 +722,38 @@ export async function archiveRepo({
   return res.body;
 }
 
+/**
+ * PERMANENTLY delete a repository. There is no undo, and no GitHub-side grace period.
+ *
+ * Deliberately kept next to {@link archiveRepo} so the asymmetry is visible at the point
+ * of choice: archiving is reversible from Settings, this is not. The ONLY caller is
+ * `scripts/cleanup-e2e-repos.mjs`, which re-checks the throwaway-name gate immediately
+ * before invoking it — this helper itself enforces nothing about the name, so do not add
+ * a second caller without carrying that gate along.
+ *
+ * Needs the classic PAT's `delete_repo` scope. A token with only `repo` returns 403,
+ * which surfaces here as a thrown error naming the missing scope rather than a silent
+ * no-op — a delete that quietly did nothing would be the worst outcome of the three.
+ *
+ * GitHub answers 204 with no body on success.
+ */
+export async function deleteRepo({
+  pat,
+  owner,
+  repo,
+  fetchImpl = globalThis.fetch,
+  sleepImpl = realSleep,
+}) {
+  const res = await githubFetch(`${GITHUB_API_BASE}/repos/${owner}/${repo}`, {
+    method: "DELETE",
+    token: pat,
+    fetchImpl,
+    sleepImpl,
+    label: `delete ${owner}/${repo}`,
+  });
+  return res.body;
+}
+
 /** Every repo the PAT's user OWNS, following `Link: rel=next`. */
 export async function listOwnerRepos({
   pat,

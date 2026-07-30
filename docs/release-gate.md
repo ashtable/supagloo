@@ -1,16 +1,16 @@
 # The committed-configuration gate
 
-**One question: has anybody ever run this repo's e2e suite against the trees
-`docker-compose.yml` actually names?**
+**One question: has anybody run this repo's e2e suite against the trees
+`docker-compose.yml` actually names, at the gitlinks it names them at *right now*?**
 
-Today the answer is no, and that is what this document exists to stop being invisible.
 `tests/unit/committed-config-gate.test.ts` enforces every claim below.
 
 ---
 
 ## 1. Why the gate exists (RX-9)
 
-`docker-compose.yml` builds four services from root's **submodules**:
+`docker-compose.yml` builds four services from root's **submodules**, and as of
+2026-07-29 that is the only way it is built:
 
 ```
 migrate  ->  ./supagloo-nodejs-api
@@ -19,29 +19,33 @@ dbos     ->  ./supagloo-nodejs-dbos
 nextjs   ->  ./supagloo-nextjs
 ```
 
-A gitignored `docker-compose.override.yml` redirects all four to the **sibling** checkouts
-at `~/code/*`. That override is legitimate and deliberate: root's gitlinks are bumped in a
-later workflow step, so until then the override is the only way `docker compose up --build`
-exercises in-flight code. Step 8 judged it explicitly against the memory
-`feedback-never-fake-submodule-resolution` and it is **not** that failure mode — that memory
-is about db-lib, and db-lib went through a real release, real gitlink bumps in three
-consumers, and a matching `ARG DATABASE_LIB_REF` in two Dockerfiles.
+**The sibling-checkout override is retired.** A gitignored `docker-compose.override.yml`
+used to redirect all four contexts to `~/code/*` so that `docker compose up --build`
+exercised in-flight code before the gitlinks moved. That convenience was also the entire
+reason this gate had to exist: it meant every green e2e run in this repo's history was
+obtained against trees the committed configuration did not name, and the two demonstrably
+diverged — Step 8's M13 found the dbos submodule missing a source file the sibling had, and
+a nextjs image built from an un-bumped submodule failed E-BH5, E-BH6 and E-BH8.
 
-The residual is still real, and it is the one this gate covers: **root's green e2e was
-obtained only with the override active.** After the gitlinks are bumped, `docker compose up
---build` uses the submodule contexts, and nobody will have run `boot-hardening.e2e.ts`
-against those images. Releasing on a configuration nothing has executed is the shape that
-memory forbids trusting, even when the reason it happened is sound.
+The support code still tolerates the file's presence (`tests/e2e/global-setup.ts` and
+`boot-hardening.e2e.ts` add it conditionally, and it stays in `.gitignore` so a stray copy
+can never be committed) — but it is no longer part of the workflow, and re-creating it
+re-opens exactly the hole described above. To exercise in-flight service code, bump the
+gitlink; to iterate fast, run that service outside Compose.
 
-Two of the four services make this concrete rather than theoretical:
+Retiring it is the strongest available form of the rule in
+`feedback-never-fake-submodule-resolution`: that memory forbids trusting a consumer's green
+suite when the dependency it resolved was not the released, pinned one. The override was
+the same failure at one level up — root's suite resolving three services from somewhere
+other than its own gitlinks — and the only durable fix for "don't fake submodule
+resolution" is to remove the mechanism that faked it.
 
-- **dbos** — Step 8's M13 confirmed the submodule tree and the sibling tree **differed**:
-  the submodule had no `src/workflows/render/media-options.ts` at all, and still carried a
-  registry comment the sibling had corrected.
-- **nextjs** — the sibling carries item 7's terminal boot refusal and item 8's per-request
-  `YV_APP_KEY` read. An image built from the un-bumped submodule fails **E-BH5**, **E-BH6**
-  and **E-BH8**. That is why the rebuild must happen **after** item 8's fix has propagated
-  into the gitlink, never before.
+**What the gate still guards, and it is not nothing.** Building from the submodules makes
+the images *nameable*, not *proven*. The moment a gitlink moves, `docker compose up --build`
+produces images from code this suite has never executed, and `boot-hardening.e2e.ts` is
+precisely the suite that catches a service which boots wrong. So the marker below records
+the three SHAs the last green run was obtained at, and the unit guard fails if they are not
+the gitlinks as they stand — a bump without a re-run is red, which is the whole point.
 
 ---
 
@@ -52,19 +56,21 @@ sync, and after root's own three gitlinks are bumped. In order:
 
 1. **Bump root's three code gitlinks** to the released commits
    (`supagloo-nextjs`, `supagloo-nodejs-api`, `supagloo-nodejs-dbos`).
-2. **Move `docker-compose.override.yml` aside** — `mv docker-compose.override.yml
-   docker-compose.override.yml.bak`. Do not edit it; the point is to run with it absent, and
-   both `tests/e2e/global-setup.ts` and `tests/e2e/boot-hardening.e2e.ts` include it
-   conditionally and behave correctly when it is gone.
+2. **Confirm no `docker-compose.override.yml` exists.** It is retired (§1); if one has
+   reappeared, delete it. `docker compose config | grep context` must show all four
+   contexts under `./supagloo-*`. This step used to be "move it aside" and is kept as a
+   check rather than dropped, because the file is gitignored — nothing in review would
+   catch a local copy quietly redirecting the build.
 3. **Rebuild all four services from the committed contexts**, cold:
    `docker compose build --no-cache migrate api dbos nextjs`. `--no-cache` is not
-   superstition — a cached layer keyed on an identical `package.json` would silently reuse a
-   build of the sibling tree.
+   superstition — a cached layer keyed on an identical `package.json` can outlive the
+   gitlink move that was supposed to change what is in the image.
 4. **Bring the stack up** and let `migrate` complete: `docker compose up -d`.
-5. **Run root's full e2e**: `npm run test:e2e`. It must include **E-BH8**, the healthy-nextjs
-   case, which is the one that fails if the nextjs gitlink predates item 8.
-6. **Record the result below**, then restore the override if you are going back to
-   in-flight work.
+5. **Run root's full e2e**: `npm run test:e2e`. Verify all eight `boot-hardening` cases
+   actually executed (`--reporter=verbose`, real per-case timings — a skipped case reads as
+   a pass in the summary line). **E-BH8** is the load-bearing one: it fails if the nextjs
+   gitlink predates a boot-affecting change.
+6. **Record the result in §3.**
 
 Anything less means the shipped configuration is untested.
 
@@ -77,7 +83,7 @@ was verified at — and if it names shas, they must equal root's gitlinks **righ
 a submodule pointer without re-running §2 and the gate goes red, which is the entire point.
 
 ```
-COMMITTED-CONFIG VERIFIED AT: not-yet
+COMMITTED-CONFIG VERIFIED AT: 22335fd76ac3c3b1cb5b4219f08989d7d381c4d1 255131e2612ba5fb190a3638af766948421f8f4b 49f83aca776f13a7e23fcf79d001ebe14415a9c6
 ```
 
 To record a verified run, replace `not-yet` with the three shas, space-separated, e.g.
@@ -116,3 +122,33 @@ suite is what makes this gate mean anything, and it is the same ordering that
 `supagloo-nodejs-dbos`'s `dockerfile-database-lib-pin` test enforces.
 
 §2 must run before these gitlinks are deployed.
+
+**Verified 2026-07-29 (second run), after the api + nextjs releases.** Compose already
+builds from the submodules (§1), so §2 reduced to: confirm no override exists,
+`docker compose build --no-cache migrate api dbos nextjs`, `docker compose up -d` with
+`migrate` reporting *"No pending migrations to apply."*, then root's full e2e — **5 files
+/ 19 tests**, with all eight `boot-hardening` cases confirmed executed via
+`--reporter=verbose` and **E-BH8** green. Re-run once more after the Gloo-connect helper shipped in nextjs `22335fd`; only the nextjs gitlink had moved, so only its image was rebuilt cold — the api and dbos images were already from the pointers this marker names.
+
+This run also fixed the guard itself. `committedGitlinks()` read `git ls-tree HEAD`, so a
+STAGED gitlink bump was invisible to it: both the nextjs and api pointers were staged at
+new commits while the marker still named the old ones, and the suite passed. §3 had
+described index-reading behaviour for weeks — only the code disagreed. It now reads
+`git ls-files -s`, so `git add <submodule>` arms the guard and the staleness surfaces
+before the commit rather than after it.
+
+**Verified 2026-07-29, seven-feature round.** `docker-compose.override.yml` was moved aside,
+`docker compose build --no-cache migrate api dbos nextjs` rebuilt all four images from the committed
+submodule contexts, `docker compose up -d` completed with `migrate` reporting *"No pending migrations
+to apply."*, and root's full e2e ran green: **5 files / 19 tests**, with all 8 `boot-hardening` cases
+individually confirmed to execute (E-BH1..E-BH8, real per-case timings 69 ms–1106 ms — not skipped).
+**E-BH8 passed**, so the committed nextjs image serves the container's runtime `YV_APP_KEY` with no
+build-time placeholder — the case that fails if the nextjs gitlink is stale.
+
+This run is also why the override was retired rather than restored afterwards. At the moment of the
+run the three gitlinks were **byte-identical to the sibling checkouts** — the release had just bumped
+them to the released mains, and the siblings sat on version branches cut from those same commits — so
+moving the override aside cost one cold rebuild instead of a second round of verification, and proved
+the committed configuration for the first time in the repo's history. Putting it back would have
+re-introduced the only reason the two could ever disagree. From here §2 is a cheap confirmation after
+each gitlink move, not a separate expedition.

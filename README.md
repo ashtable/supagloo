@@ -33,21 +33,42 @@ Supagloo is composed of three applications, each maintained in its own repositor
 
 Clone with submodules:
 
+**Clone with submodules — `--recurse-submodules` is not optional here.** This repo is
+almost entirely submodules; a plain `git clone` leaves you with four empty directories
+and a Compose file that cannot build.
+
 ```bash
 git clone --recurse-submodules https://github.com/ashtable/supagloo.git
+cd supagloo
 ```
 
-If you already cloned without `--recurse-submodules`:
+**`--recurse-submodules` must be recursive, and it is by default** — that matters because
+the submodules are themselves nested. `supagloo-nextjs`, `supagloo-nodejs-api` and
+`supagloo-nodejs-dbos` each vendor `supagloo-database-lib` and `supagloo-prompts` as
+submodules of their own, so a one-level checkout gets you the three services with an empty
+`supagloo-database-lib` inside each — and every build fails on a missing
+`@supagloo/database-lib`.
+
+If you already cloned without it, or a `git pull` brought in a moved pointer:
 
 ```bash
 git submodule update --init --recursive
 ```
 
-### Running the platform locally
-
-A Docker Compose file brings up the platform locally:
+Verify you got everything — every line should show a commit SHA, and none should be
+prefixed with `-` (uninitialised):
 
 ```bash
+git submodule status --recursive
+```
+
+### Running the platform locally
+
+Copy `.env.example` to `.env` first — several services **fail fast at boot** (deliberately,
+never silently) without the credentials it documents.
+
+```bash
+cp .env.example .env   # then fill it in
 docker compose up --build
 ```
 
@@ -55,14 +76,32 @@ Then open [http://localhost:8000](http://localhost:8000).
 
 `docker-compose.yml` brings up Postgres (both logical databases), MinIO, the one-shot
 `migrate` and `minio-init` jobs, the Fastify `api`, the DBOS worker (`dbos`) and `nextjs`.
-Copy `.env.example` to `.env` first — several services fail fast at boot without the
-credentials it documents.
+
+**Compose builds the three services from the SUBMODULES**, at exactly the commits this
+repo's gitlinks name — never from a sibling checkout elsewhere on your disk. That is the
+point: what you run locally is what the pinned configuration actually is, so a green local
+stack means something about the committed state rather than about your working tree.
+
+The consequence is worth stating plainly, because it changes the edit loop: **a change in
+`~/code/supagloo-nextjs` does not reach a container until it is committed, pushed, and the
+gitlink here is bumped.** For fast iteration, run that service directly (`npm run dev` in
+its own checkout) and point it at the Compose stack's Postgres/MinIO; use Compose when you
+want to exercise the integrated, pinned system.
 
 ### Keeping submodules up to date
 
+To move to the pointers this repo currently names — the normal case, e.g. after a pull:
+
 ```bash
-git submodule update --remote --merge
+git submodule update --init --recursive
 ```
+
+**Do not use `git submodule update --remote`.** It fast-forwards each submodule to its
+remote tip, silently overwriting the reviewed gitlinks with whatever happens to be on
+`main` right now. Gitlinks here are moved deliberately as part of a release, in dependency
+order (`supagloo-database-lib` → the three services → this repo), so an accidental
+`--remote` produces a combination nobody has tested and a diff that looks like intentional
+work.
 
 ## Testing
 
@@ -86,16 +125,20 @@ not answer that question), and the `dbos` container's memory profile. It gates n
 load run occupies the worker for minutes and must never be able to turn the gating suite
 red. It needs the Compose stack up **and** the `supagloo-dbos:latest` image built: it reads
 the running worker's queue configuration out of the image rather than out of a checkout,
-because `docker-compose.override.yml` decides which tree the image came from. Each run
+because the image is the only thing that can answer "what is actually running". Each run
 leaves rows and MinIO objects behind permanently unless you pass `--cleanup`; row 42's
 janitor cannot reclaim them. Its measured output, and the Railway sizing recommendation
 extrapolated from it, live in [`docs/render-sizing.md`](docs/render-sizing.md); its pure
 utilities are unit-tested by `tests/unit/render-load-harness.test.ts`.
 
-Before a release, [`docs/release-gate.md`](docs/release-gate.md) is the one procedure that
-must not be skipped: root's e2e green is obtained with `docker-compose.override.yml`
-building from the sibling checkouts, so the **committed** configuration is unproven until
-that gate is run. `tests/unit/committed-config-gate.test.ts` enforces it.
+Before a release, [`docs/release-gate.md`](docs/release-gate.md) records which gitlinks
+root's e2e was last proven against. It exists because a green suite says nothing unless you
+know which trees produced the images. Now that Compose builds from the submodules by
+default the two are normally the same thing, and the gate is a cheap confirmation rather
+than a second round of work — but it still has to be re-run whenever a gitlink moves,
+because the images are then from code the suite has not executed.
+`tests/unit/committed-config-gate.test.ts` enforces that the recorded SHAs match the
+gitlinks right now, so a bump without a re-run turns it red.
 
 `docker-compose.test.yml` is a **test-enablement overlay**, applied explicitly with
 `-f` (Docker never auto-merges a `.test.yml`). It is not optional and not vestigial: it
