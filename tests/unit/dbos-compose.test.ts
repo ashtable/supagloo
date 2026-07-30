@@ -115,6 +115,33 @@ describe("docker-compose.yml — Task #15 dbos worker service", () => {
     });
   });
 
+  // -------------------------------------------------------------------------------
+  // 2026-07-30. The worker could not read scripture AT ALL, and nothing anywhere said so.
+  //
+  // `supagloo-nodejs-dbos` reads `YOUVERSION_APP_KEY` (`src/config/env.ts`), hands it to the
+  // runtime (`src/dbos/runtime.ts`) and sends it as the live API's `x-yvp-app-key`
+  // (`src/providers/youversion.ts`). This service block never passed it. The root
+  // `.env.example` meanwhile described the variable as *"already wired — dbos sends it as a
+  // header"*, which was true of the CODE and false of the WIRING.
+  //
+  // The consequence was invisible for as long as it was unreachable. `generateScript` only
+  // calls `fetchPassage` when the project's manifest HAS a `scripture` block, and every e2e
+  // fixture in every repo was a `createdFrom: "blank"` project with no such block — so the
+  // whole passage-fetch path was dead code under test. The first spec to create a project
+  // WITH a chosen passage (`supagloo-nextjs tests/e2e/studio-wizard-scripture-carry.e2e.ts`)
+  // hit it immediately: measured from inside this container, `GET
+  // /v1/bibles/12/passages/PSA.23` answers **401** with no header and **200** with the root
+  // `.env` key, and the 401 is non-retryable, so the user's storyboard generation ends as
+  // "Generation failed — try again" with the real cause three services away.
+  //
+  // A `${VAR}` reference is the assertion (never a literal), which is also what keeps the
+  // secret out of this tracked file.
+  it("gives the worker the YouVersion app key it sends as x-yvp-app-key", () => {
+    expect(envValue(services.dbos.environment, "YOUVERSION_APP_KEY")).toBe(
+      "${YOUVERSION_APP_KEY}",
+    );
+  });
+
   it("wires the app db and the DBOS system db as separate URLs", () => {
     const appUrl = envValue(services.dbos.environment, "DATABASE_URL");
     const systemUrl = envValue(services.dbos.environment, "DBOS_DATABASE_URL");
