@@ -83,7 +83,7 @@ was verified at — and if it names shas, they must equal root's gitlinks **righ
 a submodule pointer without re-running §2 and the gate goes red, which is the entire point.
 
 ```
-COMMITTED-CONFIG VERIFIED AT: 22335fd76ac3c3b1cb5b4219f08989d7d381c4d1 255131e2612ba5fb190a3638af766948421f8f4b 49f83aca776f13a7e23fcf79d001ebe14415a9c6
+COMMITTED-CONFIG VERIFIED AT: dcd7dcce316150949de9e329dc416ff402021286 255131e2612ba5fb190a3638af766948421f8f4b 49f83aca776f13a7e23fcf79d001ebe14415a9c6
 ```
 
 To record a verified run, replace `not-yet` with the three shas, space-separated, e.g.
