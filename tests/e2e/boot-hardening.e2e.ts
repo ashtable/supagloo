@@ -190,21 +190,38 @@ function runOneOff(service: string, overrides: Record<string, string>): RunResul
  */
 const BOOT_DECISION_TIMEOUT_MS = 30_000;
 
+/**
+ * `--rm` IS NOT ENOUGH ON THE TIMEOUT PATH, and this helper is the one that takes it.
+ *
+ * `--rm` removes the container when it EXITS. When the harness's timeout fires we SIGTERM the
+ * `docker compose` CLI, and the container it started can outlive it — MEASURED: the two
+ * mutation runs that proved E-BH9 left `supagloo-dbos-run-<hash>` containers `Up` afterwards,
+ * i.e. two extra live workers polling the same queues as the long-lived `dbos` service. That
+ * is the exact hazard this file's own header is about ("that would break ANOTHER REPO'S LANE,
+ * invisibly"), and it is worst on the path that matters: if someone reverts the boot gate,
+ * E-BH9 goes red AND leaks a worker into the shared stack.
+ *
+ * So the container is given an explicit `--name` and force-removed in a `finally`, which does
+ * not depend on the CLI surviving long enough to honour `--rm`.
+ */
 function runOneOffWithout(
   service: string,
   unset: readonly string[],
   command: readonly string[],
 ): RunResult {
+  const name = `supagloo-bh-${service}-${process.pid}-${Date.now()}`;
   const args = [
     "compose",
     ...FILE_ARGS,
     "run",
     "--rm",
     "--no-deps",
+    "--name",
+    name,
     "--entrypoint",
     "env",
     service,
-    ...unset.flatMap((name) => ["-u", name]),
+    ...unset.flatMap((varName) => ["-u", varName]),
     ...command,
   ];
   try {
@@ -217,6 +234,10 @@ function runOneOffWithout(
     return { status: 0, output, timedOut: false };
   } catch (err) {
     return classifyFailure(err);
+  } finally {
+    // Best-effort and deliberately silent: on the normal path `--rm` already removed it, so
+    // "No such container" is the expected outcome rather than a problem to report.
+    spawnSync("docker", ["rm", "-f", name], { stdio: "ignore" });
   }
 }
 
