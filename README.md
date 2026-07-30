@@ -4,30 +4,178 @@ Tools for Creators, Built on Gloo AI & YouVersion Platform.
 
 This repository is the unifying **pseudo-monorepo** for the Supagloo platform. It doesn't contain application code of its own; instead it pulls the individual apps in as Git submodules and provides the overarching documentation and a Docker Compose file to run the entire platform locally.
 
+## What it does
+
+Supagloo turns a scripture passage into a short vertical video. You pick a passage, an LLM
+plans a storyboard, per-scene images or video clips and a narration track are generated,
+and Remotion renders the result. The composition lives as code in **your own GitHub repo** —
+Supagloo scaffolds it, commits to it, and tags releases in it.
+
 ## Architecture
 
-Supagloo is composed of three applications, each maintained in its own repository and wired in here as a submodule:
+Five repositories. This one is the pseudo-monorepo: it holds no application code, only the
+submodules, the Compose file and the docs.
 
-| Submodule | Role | Repository |
+| Repo | Role | Wired in as |
 | --- | --- | --- |
-| [`supagloo-nextjs`](https://github.com/ashtable/supagloo-nextjs) | **UI** — the Next.js web frontend | `ashtable/supagloo-nextjs` |
-| [`supagloo-nodejs-api`](https://github.com/ashtable/supagloo-nodejs-api) | **API** — enqueues new DBOS jobs | `ashtable/supagloo-nodejs-api` |
-| [`supagloo-nodejs-dbos`](https://github.com/ashtable/supagloo-nodejs-dbos) | **App server** — runs durable functions (e.g. LLM calls) via DBOS | `ashtable/supagloo-nodejs-dbos` |
+| [`supagloo-nextjs`](https://github.com/ashtable/supagloo-nextjs) | UI + a thin BFF (`app/api/**`). Holds the httpOnly session cookie and forwards to the API with a bearer token. No business logic, no DB or S3 access. | submodule |
+| [`supagloo-nodejs-api`](https://github.com/ashtable/supagloo-nodejs-api) | Fastify. Owns auth/sessions, all CRUD, OAuth exchanges, presigned URLs, and job enqueueing. Stateless. **The only S3 URL signer.** | submodule |
+| [`supagloo-nodejs-dbos`](https://github.com/ashtable/supagloo-nodejs-dbos) | DBOS worker. Every long, failure-sensitive or money-spending operation: git ops, AI generation, Remotion renders. | submodule |
+| [`supagloo-database-lib`](https://github.com/ashtable/supagloo-database-lib) | Prisma schema + migrations, and the shared Zod contracts. Both backends depend on it. | submodule of the three above |
+| [`supagloo-prompts`](https://github.com/ashtable/supagloo-prompts) | Local development prompts. Not deployed. | submodule everywhere |
 
-### How they fit together
+### The system
 
+```mermaid
+flowchart TB
+    subgraph browser["Browser"]
+        UI["supagloo-nextjs<br/>UI + BFF route handlers"]
+    end
+
+    subgraph stack["Compose stack"]
+        API["supagloo-nodejs-api<br/>Fastify · stateless"]
+        DBOS["supagloo-nodejs-dbos<br/>durable workflows"]
+        PG[("Postgres 17<br/>supagloo + supagloo_dbos")]
+        S3[("MinIO<br/>S3-compatible")]
+    end
+
+    subgraph external["External systems"]
+        GH["GitHub App<br/>the composition repo"]
+        OR["OpenRouter<br/>text · image · speech · music · video"]
+        GLOO["Gloo AI Studio<br/>text · image · faith-aligned"]
+        YV["YouVersion<br/>sign-in + Bible text"]
+    end
+
+    UI -->|"bearer token"| API
+    UI -->|"Bible browse only"| YV
+    API -->|"enqueue by workflow id"| PG
+    API --> S3
+    API --> GH
+    API --> YV
+    DBOS -->|"polls queues"| PG
+    DBOS --> S3
+    DBOS --> GH
+    DBOS --> OR
+    DBOS --> GLOO
+    DBOS --> YV
 ```
-┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
-│ supagloo-nextjs  │────▶│ supagloo-        │────▶│ supagloo-        │
-│ (UI)             │     │ nodejs-api       │     │ nodejs-dbos      │
-│                  │     │ (queues jobs)    │     │ (durable funcs,  │
-│                  │     │                  │     │  LLM calls)      │
-└──────────────────┘     └──────────────────┘     └──────────────────┘
+
+Two rules explain most of the shape:
+
+- **The repo is the source of truth for composition.** There are no `Composition`/`Scene`
+  tables. Each project repo carries a Zod-validated `supagloo.project.json` manifest plus
+  generated Remotion sources. Postgres holds identity, connections, jobs and pointers.
+- **Generated media never enters git.** Images, clips, narration, music and renders go to
+  S3 under `projects/{id}/assets/{assetId}` and `renders/{jobId}/output.mp4`, referenced
+  from the manifest by key. The browser only ever sees short-lived presigned URLs.
+
+### Data model
+
+Twelve Prisma models in the `supagloo` database. DBOS keeps its own state in a separate
+`supagloo_dbos` database on the same server.
+
+`User` · `Session` · `GithubConnection` · `OpenRouterConnection` · `GlooConnection` ·
+`Project` · `ProjectVersion` · `ProjectJob` · `AiGeneration` · `RenderJob` ·
+`GalleryItem` · `GalleryUpvote`
+
+Provider credentials are per user and encrypted at rest (AES-256-GCM); OpenRouter's credit
+balance is fetched live and never stored.
+
+### The durable layer
+
+Ten statically-registered workflows across four queues. Registration is static by design —
+the API enqueues by name with `workflowID` set to a domain record's id, which is what makes
+retries idempotent.
+
+| Queue | Concurrency | Workflows |
+| --- | --- | --- |
+| `git-ops` | 4 | `scaffoldProject`, `importProject`, `commitVersion`, `publishVersion` |
+| `ai-generation` | 8 | `generateScript`, `generateImage`, `generateAudio`, `generateVideo` |
+| `render` | 1 | `render` — real Chromium; one at a time on purpose |
+| `maintenance` | 1 | `cleanupOrphanedAssets` |
+
+Six generation kinds — `storyboard`, `script`, `image`, `narration`, `music`, `video` —
+each constrained to the providers that can actually serve it by a shared compatibility
+matrix in `database-lib`, enforced with a **422 at enqueue, before any row is written**.
+Today `storyboard`/`script`/`image` accept Gloo or OpenRouter; `narration`/`music`/`video`
+are OpenRouter-only, because Gloo has no speech, music or video models.
+
+### Creating a project
+
+```mermaid
+sequenceDiagram
+    participant U as Browser
+    participant N as nextjs BFF
+    participant A as api
+    participant D as dbos worker
+    participant G as GitHub
+
+    U->>N: New project (repo + passage)
+    N->>A: POST /v1/projects
+    A->>A: create Project + ProjectJob
+    A-->>D: enqueue scaffoldProject (git-ops)
+    A-->>N: { projectId, jobId }
+    loop until terminal
+        N->>A: GET /v1/projects/:id/jobs/:jobId
+        A-->>N: stages[]
+    end
+    D->>G: clone → write manifest + Remotion sources → commit → push
+    D->>G: open PR → merge → tag v0.0.1 → cut working branch
+    U->>N: open /studio/[id]
 ```
 
-- The **Next.js** app is the user-facing UI.
-- The **Node.js API** accepts requests and queues new DBOS jobs.
-- The **Node.js DBOS** app server executes those jobs as durable functions — long-running or failure-sensitive work such as LLM calls.
+### Generating a scene visual
+
+```mermaid
+sequenceDiagram
+    participant U as Studio
+    participant N as nextjs BFF
+    participant A as api
+    participant D as dbos worker
+    participant P as Provider
+    participant S as S3
+
+    U->>N: ↻ Reroll visual
+    N->>N: inject { provider, model }
+    N->>A: POST /v1/ai/generations
+    A->>A: 422 if the kind/provider pair is out of matrix
+    A-->>D: enqueue generateImage (workflowID = generationId)
+    A-->>N: { generationId }
+    D->>P: generate
+    P-->>D: bytes
+    D->>S: upload projects/{id}/assets/{genId}
+    D->>A: AiGeneration → succeeded + resultAssetKey
+    loop poll
+        N->>A: GET /v1/ai/generations/:id
+    end
+    N->>A: GET /v1/files/presign-download
+    A-->>U: presigned URL → preview updates
+    U->>N: Commit → manifest written to the branch
+```
+
+Video follows the same shape but is asynchronous end to end: `submitVideoJob` persists the
+provider's job id **in the same step** as the submit, so a worker restart resumes polling
+instead of paying for a second generation.
+
+### Rendering
+
+`render` is the only single-concurrency queue. It bundles the project's Remotion sources and
+renders with real Chromium in a scrubbed-env child process, reporting stage and frame counts
+that the studio's overlay polls. Narration and music are materialised **before** bundling,
+because Remotion snapshots assets at bundle time.
+
+### External systems
+
+- **GitHub App** — installation tokens minted on demand and never stored; only the
+  installation id is persisted. Creating a new repo uses a short-lived *user* token in a
+  zero-storage hop.
+- **OpenRouter** — text, image, speech, music and video. Model ids are never hardcoded;
+  they are resolved from the live catalogues.
+- **Gloo AI Studio** — text and image, with a `tradition` parameter for faith-aligned
+  responses. Images route through `POST /ai/v2/responses`, not chat-completions.
+- **YouVersion** — sign-in, plus the Bible language/translation/book/chapter browse that the
+  new-project wizard uses. The browse surface is six nextjs BFF routes calling YouVersion
+  directly; passage text for generation is fetched server-side by the worker.
 
 ## Getting started
 
@@ -218,13 +366,24 @@ red run, and the target account also holds real repos. Reclaim them yourself:
 
 ```bash
 npm run cleanup:github-e2e -- --dry-run   # just list the candidates
-npm run cleanup:github-e2e                # confirm each repo, then ARCHIVE it
+npm run cleanup:github-e2e                # review 10 at a time, Enter deletes them
+npm run cleanup:github-e2e -- --archive   # the reversible action instead
 ```
 
-The script **archives, never deletes**, asks about **one repo at a time**, and re-checks
-the `supagloo-e2e-delete-me-` prefix immediately before it mutates anything — a repo
-failing that check is never touched even if you answer "yes". There is intentionally no
+It **deletes**, in reviewed batches. One screen of up to `--batch` repos (default 10) is
+printed, then confirmed as a unit: **Enter** accepts, `n` skips the batch, `q` stops and
+reports everything it never reached as untouched. It archived-only until the volume made
+that meaningless — a measurement found 507 throwaway repos against 385 real ones, and
+archived repos still list, still count and still page, which had begun failing the
+create-new-repo e2e with a secondary-rate-limit 403.
+
+What did not change is the safety property: the `supagloo-e2e-delete-me-` prefix is
+re-checked **immediately before every request**, so a repo failing it is never touched even
+inside an accepted batch. That mattered when the action was reversible; it is the only
+thing standing between a mistake and permanent loss now. There is intentionally no
 `--yes-to-all`, which also means it cannot run in CI: reclamation is a human action.
+Deletion needs the PAT's classic `delete_repo` scope; with only `repo` each delete reports
+a 403 rather than silently doing nothing.
 
 The prefix itself lives in exactly one authored file,
 `tests/support/e2e-github-naming.mjs`; the other three repos import it rather than
@@ -232,16 +391,22 @@ re-typing it, and `tests/unit/e2e-prefix-single-source.test.ts` greps all four c
 to keep it that way. The App **installation id is discovered at runtime** — set
 `SUPAGLOO_E2E_GITHUB_OWNER` only if the App is installed for more than one account.
 
-### The nextjs e2e lanes are split three ways
+### Every e2e lane is a real lane
 
-`supagloo-nextjs` separates its Stagehand specs by what they need, so the cheap lane stays
-runnable without Docker:
+`supagloo-nextjs` used to carry a Docker-free `mock` lane driving a fabricated session
+against a fixture storyboard. It was deleted: nothing it asserted could fail for a reason a
+user could encounter, which makes it not an end-to-end test — and worse than none, because
+it reported green while consuming a browser to do it. What it covered (copy, gating,
+routing) is unit-testable, and the jsdom lane runs that in seconds on every push.
 
 | lane | script | needs |
 | --- | --- | --- |
-| mock | `npm run test:e2e` | `next dev` only |
-| real stack | `npm run test:e2e:real` | Compose + the DBOS worker + real GitHub creds |
+| real stack | `npm run test:e2e` (alias `test:e2e:real`) | Compose + the DBOS worker + real GitHub creds |
 | heavy render | `npm run test:e2e:render` | the same, and runs for many minutes |
+
+`tests/unit/e2e-lane-coverage.test.ts` asserts the two configs partition
+`tests/e2e/*.e2e.ts` exactly once — a spec belonging to no lane would never run and never
+report, which is a green-lie generator.
 
 Do not run the `supagloo-nodejs-dbos` e2e lanes and the nextjs render lane at the same
 time: the dbos crash/replay specs kill and restart the worker, which the render lane is
