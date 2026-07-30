@@ -148,6 +148,21 @@ services:
       # need GITHUB_APP_SLUG/CLIENT_ID/CLIENT_SECRET (api-only, Task #26).
       GITHUB_APP_ID: ${GITHUB_APP_ID}
       GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY}
+      # The live YouVersion Platform key, which this worker sends as `x-yvp-app-key`
+      # (`src/providers/youversion.ts`) whenever a generation has to read scripture.
+      #
+      # Added 2026-07-30, and it had been missing since the passage fetch was built. The gap
+      # survived because it was unreachable: `generateScript` only calls `fetchPassage` for a
+      # project whose manifest HAS a `scripture` block, and every e2e fixture in every repo
+      # was a `createdFrom: "blank"` project without one. The first spec to create a project
+      # with a CHOSEN passage found it at once — no header is a 401 from the live host, the
+      # 401 is non-retryable, and the user sees "Generation failed — try again" with the cause
+      # three services away. `tests/unit/dbos-compose.test.ts` now holds this line.
+      #
+      # ONE VALUE, TWO SPELLINGS (plan row 43 / D43.3): the backends read
+      # YOUVERSION_APP_KEY, supagloo-nextjs reads YV_APP_KEY, and the nextjs block below
+      # bridges the two. This service takes the backend spelling unchanged.
+      YOUVERSION_APP_KEY: ${YOUVERSION_APP_KEY}
       # Task #36 renderWorkflow (design-delta §7 workflow 9). All OPTIONAL — the env
       # schema supplies generous defaults for the three child-process kill deadlines
       # (real sizing/timeout tuning is the load-testing task 45, §9-Q8), and the two

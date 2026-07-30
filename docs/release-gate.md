@@ -83,7 +83,7 @@ was verified at — and if it names shas, they must equal root's gitlinks **righ
 a submodule pointer without re-running §2 and the gate goes red, which is the entire point.
 
 ```
-COMMITTED-CONFIG VERIFIED AT: dcd7dcce316150949de9e329dc416ff402021286 255131e2612ba5fb190a3638af766948421f8f4b 49f83aca776f13a7e23fcf79d001ebe14415a9c6
+COMMITTED-CONFIG VERIFIED AT: 5d0837da4005e7dc2b8ffffaac19a1c9c4479778 51283fd2847e7d8c07ce1748863fd1158d748245 80829d011d92ae31798328d3670dc8199ca92c8a
 ```
 
 To record a verified run, replace `not-yet` with the three shas, space-separated, e.g.
@@ -152,3 +152,39 @@ moving the override aside cost one cold rebuild instead of a second round of ver
 the committed configuration for the first time in the repo's history. Putting it back would have
 re-introduced the only reason the two could ever disagree. From here §2 is a cheap confirmation after
 each gitlink move, not a separate expedition.
+
+**Verified 2026-07-30, the wizard-redirect / scripture-carry-through round.** All three code gitlinks
+moved (nextjs `dcd7dcc`→`062a09b`, api `255131e`→`51283fd`, dbos `49f83ac`→`80829d0`), so §2 ran in
+full. No `docker-compose.override.yml` existed and `docker compose config` reported all four contexts
+under `./supagloo-*`. `docker compose build --no-cache migrate api dbos nextjs` rebuilt every image
+from the committed submodule contexts, `docker compose up -d` completed with `migrate` reporting
+*"No pending migrations to apply."*, and root's full e2e ran green: **5 files / 19 tests**, with all
+eight `boot-hardening` cases individually confirmed to execute under `--reporter=verbose` (E-BH1..E-BH8,
+real per-case timings 84 ms–1109 ms — not skipped). **E-BH8 passed at 1109 ms**, so the committed nextjs
+image serves the container's runtime `YV_APP_KEY` with no build-time placeholder.
+
+The db-lib release in this round (`60c3691`→`fc5cf2c`) is docs + barrel-guard only, and its pointer was
+bumped with `ARG DATABASE_LIB_REF` in the same commit in both api and dbos, per each repo's
+`dockerfile-database-lib-pin` test. Both of those tests were confirmed red before staging the gitlink
+and green after — which is the ordering this document's §3 note about `git ls-files -s` describes.
+
+**Re-verified at nextjs `5d0837d`** after a second nextjs release in the same round (the e2e harness
+fixes). Only the nextjs gitlink moved, so only its image was rebuilt cold; api and dbos were already
+from the pointers this marker names. `docker compose up -d`, `migrate` clean, root's full e2e green
+again: **5 files / 19 tests**, all eight boot-hardening cases executed (70 ms–1166 ms), **E-BH8 green
+at 1166 ms**.
+
+**This round also fixed a Compose defect that no gitlink could have healed.** `docker-compose.yml`
+passed `YOUVERSION_APP_KEY` to the `nextjs` service and to **nothing else**, while the dbos worker
+reads it (`src/config/env.ts`) and sends it as `x-yvp-app-key` (`src/providers/youversion.ts`). Every
+scripture read from the worker answered **401**, non-retryably, so a storyboard generation for a
+project with a chosen passage failed with the cause three services away. It survived because the path
+was *unreachable*, not merely untested: `generateScript` only fetches a passage when the manifest has
+a `scripture` block, and every e2e fixture in every repo was a `createdFrom: "blank"` project without
+one. `.env.example` had described the variable as *"already wired — dbos sends it as a header"*, which
+was true of the code and false of the wiring; that sentence is corrected, and
+`tests/unit/dbos-compose.test.ts` now holds the line (confirmed red with the line removed).
+
+This is the class of defect §1 says building from the submodules makes *nameable* but not *proven* —
+here the images were right and the environment handed to them was not, which is why the gate's e2e
+step is a run and not an inspection.
