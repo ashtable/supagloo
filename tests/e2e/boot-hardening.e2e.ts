@@ -1,5 +1,5 @@
 import { execFileSync, execSync, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -103,13 +103,78 @@ interface RunResult {
   status: number;
   output: string;
   /**
-   * TRUE when the container was still running when the harness killed it, i.e. when there
-   * was no exit code at all. It has to be reported separately, because a hang produces
-   * `status: null` from `execFileSync` and `?? -1` would then satisfy `not.toBe(0)` —
-   * "refused to boot" passing on "never finished booting" is exactly the green lie
-   * E-BH5/E-BH6 shipped once already (a container that stays up forever).
+   * TRUE when the container was still running when the harness killed it, i.e. when it never
+   * decided to exit on its own. It has to be reported separately, because "refused to boot"
+   * passing on "never finished booting" is exactly the green lie E-BH5/E-BH6 shipped once
+   * already (a container that stays up forever).
    */
   timedOut: boolean;
+}
+
+/**
+ * Turn an `execFileSync` failure into a `RunResult`. ONE definition of "never exited",
+ * because two helpers need it and a drifting copy would silently re-open the hole below.
+ *
+ * **`ETIMEDOUT` is the authoritative signal, and `status === null` is not sufficient.** The
+ * child process here is the `docker compose` CLI, not the service. When Node's `timeout`
+ * fires it SIGTERMs that CLI, which traps the signal, stops the container and exits with a
+ * POSITIVE status of its own — so `e.status` is a number and `e.signal` is undefined, and the
+ * `status === null` test (true for a plain `sleep`, which is presumably how it was checked)
+ * reads `timedOut: false`. Measured 2026-07-30 against a deliberately-hung dbos worker: the
+ * run took 120 022 ms and both `expect(timedOut).toBe(false)` and
+ * `expect(status).toBeGreaterThan(0)` PASSED. E-BH5/E-BH6 carried that hole latently — they
+ * only ever pass in ~700 ms, so nothing had exercised the kill path. `e.code` is set to
+ * `"ETIMEDOUT"` by Node itself and is independent of what the child does with the signal.
+ */
+function classifyFailure(err: unknown): RunResult {
+  const e = err as {
+    status?: number | null;
+    signal?: string | null;
+    code?: string;
+    stdout?: string;
+    stderr?: string;
+  };
+  return {
+    status: e.status ?? -1,
+    output: `${e.stdout ?? ""}\n${e.stderr ?? ""}`,
+    timedOut:
+      e.code === "ETIMEDOUT" || e.status === null || e.status === undefined,
+  };
+}
+
+/**
+ * `--rm` IS NOT ENOUGH ON THE TIMEOUT PATH, and both one-off helpers take that path.
+ *
+ * `--rm` removes the container when it EXITS. When the harness's timeout fires we SIGTERM the
+ * `docker compose` CLI, and the container it started can outlive it — MEASURED: the two
+ * mutation runs that proved E-BH9 left `supagloo-dbos-run-<hash>` containers `Up` afterwards,
+ * i.e. two extra live workers polling the same queues as the long-lived `dbos` service. That
+ * is the exact hazard this file's own header is about ("that would break ANOTHER REPO'S LANE,
+ * invisibly"), and it is worst on the path that matters: if someone reverts a boot gate, the
+ * case goes red AND leaks a service into the shared stack.
+ *
+ * So every one-off container is given an explicit `--name` and force-removed in a `finally`,
+ * which does not depend on the CLI surviving long enough to honour `--rm`.
+ *
+ * THE NAMING AND THE REMOVAL LIVE HERE, ONCE, FOR THE SAME REASON `classifyFailure` DOES.
+ * `runOneOffWithout` was given this guard and `runOneOff` — which backs E-BH1..E-BH6 — was
+ * not, so five cases kept the hole while the sixth was fixed. A per-helper copy is how that
+ * happens; there is now nothing to copy. It matters most for `runOneOff`: it carries the
+ * 120 s timeout, and now that `classifyFailure` actually DETECTS a hang (via `ETIMEDOUT`)
+ * rather than misreading it as a clean exit, its timeout path is reachable in practice.
+ */
+let oneOffSeq = 0;
+
+function oneOffName(service: string): string {
+  // pid + ms + a per-process counter: two calls in the same millisecond would otherwise
+  // collide, and `docker compose run --name` fails outright on a name already in use.
+  return `supagloo-bh-${service}-${process.pid}-${Date.now()}-${oneOffSeq++}`;
+}
+
+function forceRemove(name: string): void {
+  // Best-effort and deliberately silent: on the normal path `--rm` already removed it, so
+  // "No such container" is the expected outcome rather than a problem to report.
+  spawnSync("docker", ["rm", "-f", name], { stdio: "ignore" });
 }
 
 /**
@@ -118,26 +183,140 @@ interface RunResult {
  */
 function runOneOff(service: string, overrides: Record<string, string>): RunResult {
   const envArgs = Object.entries(overrides).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
+  const name = oneOffName(service);
   try {
     const output = execFileSync(
       "docker",
-      ["compose", ...FILE_ARGS, "run", "--rm", "--no-deps", ...envArgs, service],
+      [
+        "compose",
+        ...FILE_ARGS,
+        "run",
+        "--rm",
+        "--no-deps",
+        "--name",
+        name,
+        ...envArgs,
+        service,
+      ],
       { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 120_000 },
     );
     return { status: 0, output, timedOut: false };
   } catch (err) {
-    const e = err as {
-      status?: number | null;
-      signal?: string | null;
-      stdout?: string;
-      stderr?: string;
-    };
-    return {
-      status: e.status ?? -1,
-      output: `${e.stdout ?? ""}\n${e.stderr ?? ""}`,
-      timedOut: e.status === null || e.status === undefined,
-    };
+    return classifyFailure(err);
+  } finally {
+    forceRemove(name);
   }
+}
+
+/**
+ * `runOneOff`, but with named variables REMOVED from the container's environment rather than
+ * set to `""` — and the difference is not pedantry, it is the whole of what E-BH9 measures.
+ *
+ * `docker compose run -e VAR=` sets `VAR` to the EMPTY STRING. A schema of
+ * `z.string().min(1).optional()` rejects an empty string just as firmly as
+ * `z.string().min(1)` does — `.optional()` only ever permits `undefined`. So a probe that
+ * blanks a variable cannot tell an optional field from a required one, and E-BH9 written that
+ * way passed on the un-fixed worker (measured 2026-07-30: it refused to boot in 783 ms with
+ * `.optional()` restored, naming the variable, for the `min(1)` reason rather than the
+ * required-ness one).
+ *
+ * Unsetting is also the more faithful reproduction of the defect this round found. The gap
+ * was not a blank value in root's `.env` — it was root's `docker-compose.yml` not passing
+ * `YOUVERSION_APP_KEY` to the `dbos` service AT ALL, so the variable was absent from the
+ * worker's environment entirely. Compose always substitutes a declared variable (to `""` when
+ * unset), so `""` is the operator-forgot case and genuine absence is the missing-wiring case.
+ * They are different failures and only the second one was invisible.
+ *
+ * `--entrypoint env` rather than a shell: no quoting, and the service's command is passed
+ * explicitly so this helper never has to guess it.
+ *
+ * The timeout is 30 s rather than `runOneOff`'s 120 s. A boot refusal is sub-second here
+ * (E-BH1..E-BH9 measure 70–1117 ms), so 30 s is already two orders of magnitude of slack, and
+ * the difference matters: a worker that boots is proved by NOT exiting, so the timeout is the
+ * measurement rather than an accident, and paying 120 s for it four times over would make the
+ * gate's e2e step something people skip.
+ */
+const BOOT_DECISION_TIMEOUT_MS = 30_000;
+
+/**
+ * `runOneOff`, but with the named variables UNSET rather than blanked, and with the service's
+ * command passed explicitly (see the docblock above `BOOT_DECISION_TIMEOUT_MS`). It takes the
+ * same `--name` + `finally` leak guard, from the same shared helpers.
+ */
+function runOneOffWithout(
+  service: string,
+  unset: readonly string[],
+  command: readonly string[],
+): RunResult {
+  const name = oneOffName(service);
+  const args = [
+    "compose",
+    ...FILE_ARGS,
+    "run",
+    "--rm",
+    "--no-deps",
+    "--name",
+    name,
+    "--entrypoint",
+    "env",
+    service,
+    ...unset.flatMap((varName) => ["-u", varName]),
+    ...command,
+  ];
+  try {
+    const output = execFileSync("docker", args, {
+      cwd: ROOT,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: BOOT_DECISION_TIMEOUT_MS,
+    });
+    return { status: 0, output, timedOut: false };
+  } catch (err) {
+    return classifyFailure(err);
+  } finally {
+    forceRemove(name);
+  }
+}
+
+/**
+ * The dbos image's OWN command, read from the Dockerfile that Compose builds it from.
+ *
+ * E-BH9 has to pass a command explicitly: `--entrypoint env` is what makes `env -u VAR`
+ * possible, and overriding the entrypoint discards the image's `CMD`. It used to pass a
+ * hardcoded `["node", "dist/main.js"]`, which silently coupled root's spec to a value in
+ * ANOTHER REPO. That coupling is not benign in either direction. Change the entry point in
+ * `supagloo-nodejs-dbos` and this case keeps launching the old one: if the old path is gone
+ * the container exits non-zero with a Node "cannot find module" error, so `timedOut === false`
+ * and `status > 0` both hold and the only thing standing between that and a GREEN E-BH9 is
+ * the two `toContain` assertions — i.e. the case would be passing on the wrong process, or
+ * failing for a reason that has nothing to do with the boot gate.
+ *
+ * Reading it makes the pin structural rather than documented, so there is no value left to
+ * drift. Read from `<root>/supagloo-nodejs-dbos` — the SUBMODULE, i.e. the very build context
+ * `docker-compose.yml` names — not the `~/code` sibling checkout.
+ */
+function dbosImageCommand(): readonly string[] {
+  const dockerfile = resolve(ROOT, "supagloo-nodejs-dbos", "Dockerfile");
+  const source = readFileSync(dockerfile, "utf8");
+  // An ENTRYPOINT would mean CMD is only the ARGUMENT list, so the command derived here
+  // would be incomplete — and `--entrypoint env` drops the ENTRYPOINT too. Fail loudly
+  // rather than probe a half-command.
+  expect(
+    /^ENTRYPOINT\s/m.test(source),
+    `${dockerfile} now declares an ENTRYPOINT; E-BH9's derived command is incomplete`,
+  ).toBe(false);
+  // Docker semantics: the LAST CMD wins. Exec form only — shell form would need a shell.
+  const forms = [...source.matchAll(/^CMD\s+(\[[^\]]*\])\s*$/gm)];
+  expect(
+    forms.length,
+    `${dockerfile} has no exec-form CMD ["..."] line for E-BH9 to derive its command from`,
+  ).toBeGreaterThan(0);
+  const command = JSON.parse(forms[forms.length - 1][1]) as unknown;
+  expect(
+    Array.isArray(command) && command.length > 0 && command.every((a) => typeof a === "string"),
+    `${dockerfile}'s CMD is not a non-empty array of strings: ${forms[forms.length - 1][1]}`,
+  ).toBe(true);
+  return command as readonly string[];
 }
 
 /** Containers this spec started detached, torn down even if an assertion throws. */
@@ -278,6 +457,60 @@ describe("E-BH: dbos refuses to boot on a bad secrets key", () => {
     expect(status).not.toBe(0);
     expect(output).toContain("SECRETS_ENCRYPTION_KEY");
   });
+
+  it(
+    "E-BH9 — a MISSING YOUVERSION_APP_KEY exits non-zero and names the variable AND the file",
+    () => {
+      // 2026-07-30. The worker's scripture reads need `x-yvp-app-key` on BOTH YouVersion
+      // endpoints, and `generate-script.ts` calls `fetchPassage` unconditionally after
+      // swallowing the collection 401 — so a missing key is a permanent generation failure
+      // that reaches the user as "Generation failed — try again", three services from the
+      // cause. `supagloo-nodejs-dbos/src/config/env.ts` now refuses to boot instead.
+      //
+      // TWO THINGS HERE ARE LOAD-BEARING AND BOTH WERE GOT WRONG ONCE BEFORE SHIPPING.
+      //
+      // (1) It UNSETS the variable — `runOneOffWithout`, not `runOneOff(…, {VAR: ""})`. See
+      // that helper's docblock: `.optional()` permits only `undefined`, so `.min(1)` rejects
+      // an empty string either way. Written with `-e YOUVERSION_APP_KEY=` this case refused
+      // to boot in 783 ms with `.optional()` restored and PASSED — green on the un-fixed
+      // worker, for the `min(1)` reason instead of the required-ness one. Genuine absence is
+      // also the shape the real defect had: the variable was missing from the dbos service's
+      // Compose environment entirely, not blank.
+      //
+      // (2) It must NOT copy E-BH3/E-BH4's assertion shape. Those assert only
+      // `status).not.toBe(0)`, which is safe for a bad SECRETS key because that throw is
+      // unconditional and immediate. It is not safe here: dbos is a long-running worker, so
+      // with `.optional()` restored and the variable unset it BOOTS and keeps running
+      // (measured — "DBOS launched!", four queues, still polling after 35 s), `execFileSync`
+      // hits its 120 s timeout, and `RunResult` reports `status: -1, timedOut: true` — which
+      // SATISFIES `not.toBe(0)`. So this asserts `timedOut === false` and `status > 0`
+      // exactly as E-BH5/E-BH6 do, for exactly the reason `RunResult`'s own comment gives.
+      //
+      // With both in place the discriminating mutation reds it on `timedOut`, as measured.
+      //
+      // It does NOT subsume `tests/unit/dbos-compose.test.ts`'s guard, and both are needed:
+      // deleting `YOUVERSION_APP_KEY: ${YOUVERSION_APP_KEY}` from the dbos service also
+      // produces a refusal now, so the boot gate cannot tell a missing COMPOSE LINE from a
+      // missing `.env` value. The unit guard is what names the wiring; this one is what
+      // proves the service fails closed at all. That gap — the code reading a variable
+      // Compose passed to nextjs and nothing else — is the defect this whole round found.
+      //
+      // (3) The command is DERIVED from the dbos submodule's Dockerfile `CMD`, not hardcoded
+      // — see `dbosImageCommand`. `--entrypoint env` discards the image's CMD, so this case
+      // has to name the worker's entry point, and naming it literally coupled root's spec to
+      // a string in another repo that nothing checked.
+      const { status, output, timedOut } = runOneOffWithout(
+        "dbos",
+        ["YOUVERSION_APP_KEY"],
+        dbosImageCommand(),
+      );
+      expect(timedOut, "the worker never exited — it booted without the key").toBe(false);
+      expect(status).toBeGreaterThan(0);
+      expect(output).toContain("YOUVERSION_APP_KEY");
+      expect(output).toContain("supagloo-nodejs-dbos/src/config/env.ts");
+    },
+    180_000,
+  );
 });
 
 describe("E-BH: nextjs refuses to BOOT on a bad env (D43.3 / §9 S4)", () => {
