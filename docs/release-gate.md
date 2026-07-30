@@ -87,7 +87,7 @@ was verified at — and if it names shas, they must equal root's gitlinks **righ
 a submodule pointer without re-running §2 and the gate goes red, which is the entire point.
 
 ```
-COMMITTED-CONFIG VERIFIED AT: 5d0837da4005e7dc2b8ffffaac19a1c9c4479778 51283fd2847e7d8c07ce1748863fd1158d748245 80829d011d92ae31798328d3670dc8199ca92c8a
+COMMITTED-CONFIG VERIFIED AT: 2596e64fc8fb1c9f95b2386c52384af02bcc2717 51283fd2847e7d8c07ce1748863fd1158d748245 2db00816f9688d8074d4bc94ca2bec3a73d8fa28
 ```
 
 To record a verified run, replace `not-yet` with the three shas, space-separated, e.g.
@@ -192,3 +192,70 @@ was true of the code and false of the wiring; that sentence is corrected, and
 This is the class of defect §1 says building from the submodules makes *nameable* but not *proven* —
 here the images were right and the environment handed to them was not, which is why the gate's e2e
 step is a run and not an inspection.
+
+**Verified 2026-07-30 (Step 13) at nextjs `2596e64` / api `51283fd` / dbos `2db0081` — the run this
+marker now names.** Two gitlinks moved after the run recorded immediately above (nextjs
+`5d0837d`→`2596e64`, dbos `80829d0`→`2db0081`; api unchanged), so §2 ran in full and cold.
+
+Why it was re-run from scratch rather than inherited. An earlier green measurement existed for this
+round and was **discarded**, for two independent reasons, and recording it would have been the exact
+staleness §1 describes:
+
+1. `tests/e2e/boot-hardening.e2e.ts` was **rewritten after those numbers were measured** — commit
+   `07e32be` changed `runOneOffWithout`'s docker argv. Numbers measured against a different spec are
+   not evidence about this one.
+2. The stack those numbers came from was **not one coherent cold build**: the `dbos` image had been
+   rebuilt on its own during the E-BH9 mutation experiments, so the four images were from different
+   moments. `--no-cache` on all four in a single invocation is what makes them one artefact.
+
+**The run.** No `docker-compose.override.yml` existed and `docker compose config` reported all four
+contexts under `/Users/ash/code/supagloo/supagloo-*` (the submodules). All three submodule checkouts
+were clean and byte-equal to the index gitlinks, with db-lib pinned at `fc5cf2c` in all three — so the
+build contexts really were the trees this marker names. `docker compose down` first, then
+`docker compose build --no-cache migrate api dbos nextjs` rebuilt every image in **239 s** (exit 0,
+all four re-tagged), `docker compose up -d` brought the stack up in 8 s with `migrate` exiting **0**
+and reporting *"No pending migrations to apply."*, and the worker logged `DBOS launched!` with its four
+queues — itself now a live check that root's `.env` carries a non-empty `YOUVERSION_APP_KEY`, because
+since dbos `2db0081` a blank one takes the worker DOWN rather than degrading it.
+
+Root's full e2e then ran green: **5 files / 20 tests** (19 before E-BH9), lane wall time **6.53 s**,
+with all **nine** boot-hardening cases individually confirmed to execute under `--reporter=verbose` —
+E-BH1 625 ms, E-BH2 496 ms, E-BH3 503 ms, E-BH4 479 ms, **E-BH9 491 ms**, E-BH5 745 ms, E-BH6 671 ms,
+**E-BH8 1153 ms**, E-BH7 76 ms. Not skipped. Both gitlink-sensitive cases passed: **E-BH8** (nextjs —
+this round changed nextjs source) and **E-BH9** (dbos — the new boot gate).
+
+**E-BH9 was read, not counted**, per §2 step 5. A pass/fail summary is not diagnostic for it: on a
+stale dbos image the worker never exits, the harness kills it, and `status: -1` would satisfy a naive
+non-zero check. The probe was re-run by hand against the same image and its `RunResult` printed:
+`timedOut: false`, `status: 1`, no Node `ETIMEDOUT`, elapsed **583 ms**, refusing with *"Invalid
+environment configuration in supagloo-nodejs-dbos/src/config/env.ts — YOUVERSION_APP_KEY: Invalid
+input: expected string, received undefined"*. That is the **required-ness** path — `received
+undefined`, not a `min(1)` complaint about `""` — i.e. the discriminating one.
+
+**Two defects in the harness itself were fixed before this run, so the run certifies the fixed spec.**
+Both were surfaced reviewing Step 12 and folded into this round rather than deferred:
+
+- **`runOneOff` had no container-leak guard.** `runOneOffWithout` was given `--name` + a
+  `docker rm -f` in a `finally`; `runOneOff`, which backs E-BH1–E-BH6, was not — so five cases kept
+  the hole while the sixth was fixed. That is newly reachable rather than theoretical: now that
+  `classifyFailure` actually DETECTS a hang (`ETIMEDOUT`) instead of misreading it as a clean exit,
+  `runOneOff`'s 120 s timeout path can fire and leave a container outliving the killed CLI — leaking a
+  service into the shared stack, which is the hazard the spec's own header is about. The naming and the
+  force-remove now live in shared helpers, once, for the same reason `classifyFailure` does: there is
+  nothing left to copy. Verified after this run — `docker ps -a` matched **zero** containers on
+  `supagloo-bh`, `supagloo-dbos-run`, `supagloo-nextjs-run` or `supagloo-api-run`, with only the
+  long-lived stack remaining.
+- **E-BH9's `node dist/main.js` was hardcoded**, silently coupling root's spec to a value in another
+  repo. `--entrypoint env` (what makes `env -u VAR` possible) discards the image's `CMD`, so the case
+  must name the entry point — but naming it literally means a dbos entry-point change leaves this case
+  launching the old one, where a missing module also exits non-zero and also prints no
+  `YOUVERSION_APP_KEY`, so it would fail for a reason unrelated to the boot gate. It now **derives** the
+  command from the dbos submodule's Dockerfile `CMD` (the same build context Compose uses, not the
+  `~/code` sibling), and fails loudly if that file grows an `ENTRYPOINT` or drops its exec-form `CMD`.
+  The pin is structural, so there is no value left to drift. Confirmed at run time: derived
+  `["node","dist/main.js"]`, no `ENTRYPOINT` — identical to what was hardcoded, which is why this was a
+  latent coupling rather than a live bug.
+
+Root's unit lane was **321/322 before** this marker was written, red on exactly
+`committed-config-gate` RX-9 because §3 still named the previous SHAs — by design, and the thing this
+edit resolves — and **322/322 after**, with the gitlinks staged so `git ls-files -s` arms the guard.
