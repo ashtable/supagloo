@@ -64,15 +64,63 @@ git submodule status --recursive
 
 ### Running the platform locally
 
-Copy `.env.example` to `.env` first — several services **fail fast at boot** (deliberately,
-never silently) without the credentials it documents.
-
 ```bash
-cp .env.example .env   # then fill it in
+cp .env.example .env   # then fill it in — see below
 docker compose up --build
 ```
 
 Then open [http://localhost:8000](http://localhost:8000).
+
+#### The only `.env` that matters is this repo's
+
+**One file: `/.env` at the root of THIS repo.** The service submodules have `.env` files of
+their own, and Compose does not read any of them — there is no `env_file:` directive in
+`docker-compose.yml`, no Dockerfile copies a `.env`, and each service's `.dockerignore`
+excludes `.env` and `.env.*` outright. Those files are for running a service **directly**
+(`npm run dev` in its own checkout, or its own test lane).
+
+That asymmetry is worth internalising, because editing the wrong one is a silent no-op:
+changing `supagloo-nodejs-api/.env` and restarting Compose changes nothing at all, and
+nothing warns you.
+
+Containers get their configuration from exactly two places, both here:
+
+- literal `environment:` blocks in `docker-compose.yml` (`DATABASE_URL`, `PORT`, the `S3_*`
+  set, and a throwaway dev `SECRETS_ENCRYPTION_KEY`) — no action needed;
+- `${VAR}` interpolation from the root `.env` — **this is the part you fill in**.
+
+#### Required — `docker compose up` cannot work without these
+
+Six variables have no default. All six are real credentials, all live only in the
+untracked root `.env`, and `.env.example` documents each one in place.
+
+| Variable | Used by | Notes |
+|---|---|---|
+| `GITHUB_APP_ID` | api, dbos | |
+| `GITHUB_APP_PRIVATE_KEY` | api, dbos | **Single line with escaped `\n`**, e.g. `-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----\n`. It is normalized to real newlines before signing. A multi-line paste breaks shell-style sourcing and the app JWT. |
+| `GITHUB_APP_SLUG` | api | |
+| `GITHUB_APP_CLIENT_ID` | api | |
+| `GITHUB_APP_CLIENT_SECRET` | api | |
+| `YOUVERSION_APP_KEY` | nextjs (as `YV_APP_KEY`) | nextjs **refuses to boot** without it, by design — a terminal failure at `register()` beats a 500 page later. |
+
+Leave one blank and Compose still starts, but the owning service fails fast and says which
+variable it wants. That is the intended behaviour, not a bug to work around.
+
+#### NOT in `.env` — the AI provider credentials
+
+OpenRouter keys and Gloo client credentials are **per user**, entered through the app's
+onboarding wizard or profile page, verified live and stored encrypted in Postgres. They are
+not environment variables and there is nowhere to put them in `.env`. A fresh stack starts
+with no provider connected; connect them in the UI.
+
+#### Optional
+
+`RENDER_*` (bundle/install/media timeouts, and `RENDER_NARRATION_MODEL` /
+`RENDER_MUSIC_MODEL`) and `CLEANUP_*` (retention window, per-run cap, dry-run) all carry
+defaults in `docker-compose.yml`; set them only to override.
+
+`GITHUB_E2E_EXCHANGE_TOKEN` is needed **only** with the `docker-compose.test.yml` overlay,
+which the e2e harness applies for itself. A plain `docker compose up` never reads it.
 
 `docker-compose.yml` brings up Postgres (both logical databases), MinIO, the one-shot
 `migrate` and `minio-init` jobs, the Fastify `api`, the DBOS worker (`dbos`) and `nextjs`.
