@@ -69,8 +69,12 @@ describe("RX-9 — the committed-configuration gate exists and is written down",
     expect(from, "docs/release-gate.md has no `## 2. The procedure`").toBeGreaterThan(-1);
     expect(to).toBeGreaterThan(from);
     const d = whole.slice(from, to);
+    // Step 2 used to be "move the override aside". The override is RETIRED (§1) — Compose
+    // builds from the submodules unconditionally — so the step is now a check that no local
+    // copy has reappeared. It is still a step rather than a deletion precisely because the
+    // file is gitignored: nothing in review can see one, so the procedure has to look.
     const steps = [
-      /move\s+`?docker-compose\.override\.yml`?\s+aside/i,
+      /confirm\s+no\s+`?docker-compose\.override\.yml`?\s+exists/i,
       /--no-cache/,
       /npm run test:e2e/,
       /E-BH8/,
