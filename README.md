@@ -249,7 +249,7 @@ untracked root `.env`, and `.env.example` documents each one in place.
 | `GITHUB_APP_SLUG` | api | |
 | `GITHUB_APP_CLIENT_ID` | api | |
 | `GITHUB_APP_CLIENT_SECRET` | api | |
-| `YOUVERSION_APP_KEY` | nextjs (as `YV_APP_KEY`) | nextjs **refuses to boot** without it, by design — a terminal failure at `register()` beats a 500 page later. |
+| `YOUVERSION_APP_KEY` | nextjs (as `YV_APP_KEY`), dbos | **Both services refuse to boot** without it, by design — a terminal failure at startup beats a 500 page later. nextjs fails at `register()`; dbos fails in `src/config/env.ts` (added 2026-07-30 — it sends the key as `x-yvp-app-key`, which YouVersion requires on both the collection and passage endpoints, and a missing one surfaced as "Generation failed — try again" three services from the cause). |
 
 Leave one blank and Compose still starts, but the owning service fails fast and says which
 variable it wants. That is the intended behaviour, not a bug to work around.

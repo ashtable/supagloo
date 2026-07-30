@@ -66,10 +66,14 @@ sync, and after root's own three gitlinks are bumped. In order:
    superstition — a cached layer keyed on an identical `package.json` can outlive the
    gitlink move that was supposed to change what is in the image.
 4. **Bring the stack up** and let `migrate` complete: `docker compose up -d`.
-5. **Run root's full e2e**: `npm run test:e2e`. Verify all eight `boot-hardening` cases
+5. **Run root's full e2e**: `npm run test:e2e`. Verify all nine `boot-hardening` cases
    actually executed (`--reporter=verbose`, real per-case timings — a skipped case reads as
-   a pass in the summary line). **E-BH8** is the load-bearing one: it fails if the nextjs
-   gitlink predates a boot-affecting change.
+   a pass in the summary line). Two are load-bearing here, one per gitlink: **E-BH8** fails
+   if the **nextjs** gitlink predates a boot-affecting change, and **E-BH9** (added
+   2026-07-30) fails if the **dbos** gitlink predates its `YOUVERSION_APP_KEY` boot gate.
+   E-BH9 also has to be read carefully rather than counted: dbos is a long-running worker,
+   so on a stale image it does not exit at all and its `timedOut`/`status` assertions — not
+   a plain non-zero exit — are what catch that.
 6. **Record the result in §3.**
 
 Anything less means the shipped configuration is untested.
