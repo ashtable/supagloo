@@ -88,18 +88,18 @@ export function selectCandidates(repos) {
   return (repos ?? []).filter((r) => isE2eRepoName(r?.name));
 }
 
-/** One human-readable line per candidate, so the confirmation is informed (plan §5.4). */
+/**
+ * ONE LINE per candidate: `owner/name`, nothing else.
+ *
+ * This used to print three lines each — visibility, state, both dates, and the stamped
+ * description. That was written for a handful of repos per sweep and became unreadable
+ * at 507: a ten-repo screen filled the terminal, and the detail that was supposed to
+ * make the confirmation *informed* instead made it unskimmable, which is worse. The
+ * name already carries what a decision needs — the throwaway prefix, the spec that made
+ * it, and the run id.
+ */
 export function describeCandidate(repo) {
-  const fullName = repo.full_name ?? `${repo.owner?.login ?? "?"}/${repo.name}`;
-  const visibility = repo.private ? "private" : "PUBLIC";
-  const state = repo.archived ? "ARCHIVED" : "active";
-  const created = String(repo.created_at ?? "?").slice(0, 10);
-  const pushed = String(repo.pushed_at ?? "?").slice(0, 10);
-  return (
-    `${fullName}\n` +
-    `    ${visibility} · ${state} · created ${created} · last push ${pushed}\n` +
-    `    ${repo.description ?? "(no description)"}`
-  );
+  return repo.full_name ?? `${repo.owner?.login ?? "?"}/${repo.name}`;
 }
 
 /** Default prompt: real stdin via node:readline/promises. Injected in tests. */

@@ -83,7 +83,7 @@ was verified at — and if it names shas, they must equal root's gitlinks **righ
 a submodule pointer without re-running §2 and the gate goes red, which is the entire point.
 
 ```
-COMMITTED-CONFIG VERIFIED AT: 6d17c70721a5e8acf45f9d4715a8751589d5fa18 3d1bdb393e62675ff3c8071df61a423ae71eb3aa 49f83aca776f13a7e23fcf79d001ebe14415a9c6
+COMMITTED-CONFIG VERIFIED AT: 22335fd76ac3c3b1cb5b4219f08989d7d381c4d1 255131e2612ba5fb190a3638af766948421f8f4b 49f83aca776f13a7e23fcf79d001ebe14415a9c6
 ```
 
 To record a verified run, replace `not-yet` with the three shas, space-separated, e.g.
@@ -122,6 +122,20 @@ suite is what makes this gate mean anything, and it is the same ordering that
 `supagloo-nodejs-dbos`'s `dockerfile-database-lib-pin` test enforces.
 
 §2 must run before these gitlinks are deployed.
+
+**Verified 2026-07-29 (second run), after the api + nextjs releases.** Compose already
+builds from the submodules (§1), so §2 reduced to: confirm no override exists,
+`docker compose build --no-cache migrate api dbos nextjs`, `docker compose up -d` with
+`migrate` reporting *"No pending migrations to apply."*, then root's full e2e — **5 files
+/ 19 tests**, with all eight `boot-hardening` cases confirmed executed via
+`--reporter=verbose` and **E-BH8** green. Re-run once more after the Gloo-connect helper shipped in nextjs `22335fd`; only the nextjs gitlink had moved, so only its image was rebuilt cold — the api and dbos images were already from the pointers this marker names.
+
+This run also fixed the guard itself. `committedGitlinks()` read `git ls-tree HEAD`, so a
+STAGED gitlink bump was invisible to it: both the nextjs and api pointers were staged at
+new commits while the marker still named the old ones, and the suite passed. §3 had
+described index-reading behaviour for weeks — only the code disagreed. It now reads
+`git ls-files -s`, so `git add <submodule>` arms the guard and the staleness surfaces
+before the commit rather than after it.
 
 **Verified 2026-07-29, seven-feature round.** `docker-compose.override.yml` was moved aside,
 `docker compose build --no-cache migrate api dbos nextjs` rebuilt all four images from the committed

@@ -111,13 +111,17 @@ describe("selectCandidates — the prefix filter", () => {
   });
 });
 
-describe("describeCandidate — informed confirmation", () => {
-  it("shows full name, visibility, dates, description and archived state", () => {
+describe("describeCandidate — one skimmable line", () => {
+  it("is exactly owner/name, with no second line", () => {
     const line = describeCandidate(repo(`${E2E_REPO_PREFIX}render-k3f9a2`));
-    expect(line).toContain(`ashtable/${E2E_REPO_PREFIX}render-k3f9a2`);
-    expect(line).toContain("private");
-    expect(line).toContain("2026-07-25");
-    expect(line).toContain("safe to archive");
+    expect(line).toBe(`ashtable/${E2E_REPO_PREFIX}render-k3f9a2`);
+    expect(line).not.toContain(String.fromCharCode(10));
+  });
+
+  it("falls back to owner + name when full_name is absent", () => {
+    const r = repo(`${E2E_REPO_PREFIX}x-k3f9a2`);
+    delete (r as Record<string, unknown>).full_name;
+    expect(describeCandidate(r)).toBe(`ashtable/${E2E_REPO_PREFIX}x-k3f9a2`);
   });
 });
 
