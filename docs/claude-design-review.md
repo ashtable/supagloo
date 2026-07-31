@@ -181,10 +181,39 @@ category chips and a `RECOMMENDED` badge.
   validated, persisted to jsonb, committed to git, round-tripped through five schema mirrors and
   snapshotted into the gallery — and read by ZERO provider-facing code. Every project narrated in
   the literal `"alloy"`.
-- **There is NO voice-enumeration API at any provider** (verified live 2026-07-29), so a curated
+- ~~**There is NO voice-enumeration API at any provider** (verified live 2026-07-29), so a curated
   hardcoded table is the only option. It lives in `nextjs/lib/studio/speech-voices.ts` — the one
-  repo that reads it. The manifest and the generation request carry a resolved provider `voiceId`,
-  so dbos is a pure pass-through and needs no copy. **Do not invent a `GET /voices` endpoint.**
+  repo that reads it. **Do not invent a `GET /voices` endpoint.**~~
+  **✗ FALSE — DISPROVEN LIVE 2026-07-30. Do not cite this bullet.** OpenRouter's speech catalogue
+  (`GET /api/v1/models?output_modalities=speech`) carries a top-level **`supported_voices`** array
+  on every entry, and it answers **unauthenticated**. Measured: 19 speech models, **54 voices for
+  `hexgrad/kokoro-82m`** (`af_alloy, af_aoede, af_bella, …`), 90 for `deepgram/aura-2`, 7 for
+  `canopylabs/orpheus-3b-0.1-ft`; 6 of 19 publish `null`, which is a real "vocabulary not
+  published" state (never `[]`).
+
+  The curated table this bullet mandated was wrong for **every model it covered**, not just the
+  unlisted ones: there is **no `openai/` model in the speech catalogue at all**, so the `OPENAI`
+  set matched nothing real — and it was also the `FALLBACK`, so *every* live speech model fell
+  through to a vocabulary none of them accept. The `ORPHEUS` set carried a phantom `zoe`; the
+  `GROK` set was capitalised against a lowercase vocabulary. Consequence in production: the picker
+  offered 8 OpenAI ids against Kokoro, of which `ash` and `sage` were a hard provider **400** that
+  failed the whole generation, and the other six aliased silently onto Kokoro voices —
+  `alloy`→`af_alloy`, `shimmer`→`af_nova`, **both American Female** — which is exactly the reported
+  "same female voice for Alloy and Shimmer".
+
+  **The shipped design is now the opposite of this bullet**, per a direct user directive
+  ("we should not hardcode the IDs of anything from the openrouter API … always query the
+  openrouter API to figure out which voices exist for the selected narration model"):
+  `speech-voices.ts` holds **no voice ids at all** and is pure rules over a provider-supplied
+  `readonly string[] | null`. No `GET /voices` endpoint was invented — the api **already** fetched
+  this catalogue (`model-catalogue-service.ts`); `supported_voices` was simply being dropped at
+  three points (the api mapper, the api Fastify **response serializer**, and the nextjs contracts
+  mirror), each now widened and mutation-pinned. Proven end to end against the live provider by
+  `E-MC6`. Released 2026-07-30: nextjs `a89a09d`, api `4190c1e`, dbos `5986d3f`.
+
+  **Standing lesson:** "provider X has no API for Y, verified live" is a claim with a shelf life.
+  This one was false within 24 hours of being written, and it had authorised a hardcoded table
+  that was already wrong for every model on the day it shipped.
 - **19a says "8 voices"; 19b draws six.** Both are right: the Orpheus vocabulary really is eight
   (`leah` and `zoe` are the two the figure did not draw). The count is DERIVED from the catalogue
   and never printed as a literal.
