@@ -19,6 +19,16 @@ GitHub serves that endpoint to **GitHub App user-to-server tokens only** and ans
 > 403 — You must authenticate with an access token authorized to a GitHub App, a personal
 > access token, or basic auth in order to list repositories for an installation.
 
+⚠️ **This was ALREADY KNOWN and already documented in the code**, in the
+`InstallationRepoLister` docblock at `repo-provisioning-service.ts:40` — which names the
+403 verbatim, explains that the api's OWN e2e injects an installation-token lister to get
+round it, and states the intended production fix ("`githubAppClient.listInstallationRepos`,
+already built one scope away in `server.ts` … a one-line change in `server.ts`, a file this
+pass does not own"). The 2026-07-31 sweep rediscovered it from the outside because the
+nextjs e2e drives the containerised api, which uses the DEFAULT lister and therefore has no
+such workaround. **Read that docblock before re-deriving any of this.** The genuinely new
+half of the finding is the timeout ordering below, not the 403.
+
 Row 66's double-gated test exchange cannot mint one — it hands back
 `GITHUB_E2E_EXCHANGE_TOKEN`, a **classic PAT**. Verified directly against api.github.com:
 **both** `GITHUB_E2E_EXCHANGE_TOKEN` and `GITHUB_E2E_PAT_TOKEN` get 403. Production's real
@@ -26,11 +36,11 @@ OAuth hop yields a user-to-server token, which the endpoint accepts, so this is 
 **test-seam fidelity gap** rather than a proven product fault — but it makes `E-RNP1b`
 unpassable in this harness, deterministically, and no amount of retrying changes it.
 
-Worth noting for whoever fixes it: the gate's own docblock says it exists because dbos's
-`ensureRepoReachable` walks `GET /installation/repositories`. Probing the **user's** view
-to predict the **installation's** view is indirect; probing the installation's own view
-would be more faithful AND would work with an installation token the api already mints for
-itself. That is a design change, not a test fix — do not make it casually.
+The fix the docblock names is the right one, and for a reason stronger than "it makes the
+test pass": the gate exists to predict dbos's `ensureRepoReachable`, which walks
+`GET /installation/repositories`. Probing the **user's** view to predict the
+**installation's** view is indirect; probing the installation's own view is byte-for-byte
+the read being predicted, and works with a token the api mints for itself.
 
 ## 2. The backstop was shorter than the thing it backstopped
 
