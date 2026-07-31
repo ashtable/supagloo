@@ -87,7 +87,7 @@ was verified at — and if it names shas, they must equal root's gitlinks **righ
 a submodule pointer without re-running §2 and the gate goes red, which is the entire point.
 
 ```
-COMMITTED-CONFIG VERIFIED AT: 1446b099c29a27e80a6eb47277a49c49e7307157 51283fd2847e7d8c07ce1748863fd1158d748245 2db00816f9688d8074d4bc94ca2bec3a73d8fa28
+COMMITTED-CONFIG VERIFIED AT: a89a09d72417da7eeeaad235679bc237cee559f1 4190c1e1825f2c53064cc78a0b2e5ab30145b110 5986d3f57c52afb9e152291bba92981d83db7b64
 ```
 
 **2026-07-30 — nextjs `2596e64` → `1446b09` (nav source link + a stale gloo e2e wait).**
@@ -268,3 +268,73 @@ Both were surfaced reviewing Step 12 and folded into this round rather than defe
 Root's unit lane was **321/322 before** this marker was written, red on exactly
 `committed-config-gate` RX-9 because §3 still named the previous SHAs — by design, and the thing this
 edit resolves — and **322/322 after**, with the gitlinks staged so `git ls-files -s` arms the guard.
+
+---
+
+**Verified 2026-07-30 (Step 13) at nextjs `a89a09d` / api `4190c1e` / dbos `5986d3f` — the
+narrator-voice / audio-mix round, and the run this marker now names.** All three code gitlinks moved
+(nextjs `1446b09`→`a89a09d`, api `51283fd`→`4190c1e`, dbos `2db0081`→`5986d3f`), so §2 ran in full and
+cold. `supagloo-database-lib` was untouched by this round and was **not released**; both consumers
+stayed pinned at `ARG DATABASE_LIB_REF=fc5cf2c`, unchanged, so no `dockerfile-database-lib-pin`
+ordering applied here.
+
+**The run.** No `docker-compose.override.yml` existed and `docker compose config` reported all four
+contexts under `/Users/ash/code/supagloo/supagloo-*` (the submodules). All three submodule checkouts
+were clean and byte-equal to the staged gitlinks. Root's `.env` carried a non-empty
+`YOUVERSION_APP_KEY`. `docker compose down` first, then `docker compose build --no-cache migrate api
+dbos nextjs` rebuilt every image in **132 s** (exit 0, all four re-tagged), `docker compose up -d`
+brought the stack up in **7 s** with `migrate` exiting **0** and reporting *"No pending migrations to
+apply."*, and the worker logged `DBOS launched!` with its four queues — the live confirmation that the
+app key is present, since dbos `2db0081` a blank one takes the worker DOWN rather than degrading it.
+
+Root's full e2e then ran green: **5 files / 20 tests**, lane wall time **6.82 s**, with all **nine**
+boot-hardening cases individually confirmed to execute under `--reporter=verbose` — E-BH1 656 ms,
+E-BH2 527 ms, E-BH3 505 ms, E-BH4 651 ms, **E-BH9 544 ms**, E-BH5 744 ms, E-BH6 644 ms,
+**E-BH8 1156 ms**, E-BH7 89 ms. Not skipped.
+
+**Both gitlink-sensitive cases were READ, not counted**, per §2 step 5 — each re-run by hand against
+the same cold-built images, whose ids were checked to match the running containers:
+
+- **E-BH9 (dbos).** A pass/fail summary is not diagnostic for it: on a stale image the worker never
+  exits, the harness kills it, and `status: -1` satisfies a naive non-zero check. The probe printed
+  `timedOut: false`, `status: 1`, no Node `ETIMEDOUT`, elapsed **498 ms**, refusing with *"Invalid
+  environment configuration in supagloo-nodejs-dbos/src/config/env.ts — YOUVERSION_APP_KEY: Invalid
+  input: expected string, received undefined"* — the **required-ness** path (`received undefined`, not
+  a `min(1)` complaint about `""`), i.e. the discriminating one. The derived command was
+  `["node","dist/main.js"]` with no `ENTRYPOINT`, read from the submodule's Dockerfile.
+- **E-BH8 (nextjs).** `GET /` answered **200 in 651 ms**; in 143 248 bytes of body the container's
+  runtime `YV_APP_KEY` appeared **exactly once** and `build-time-placeholder-not-a-real-key`
+  **zero times**, with no `boot refused` in the container's logs. This round changed nextjs source,
+  so that case was load-bearing rather than ceremonial.
+
+**`E-MC6` was executed after the cold rebuild, and it PASSED** (26 ms; `studio-model-cost.e2e.ts`,
+1 passed / 5 skipped, lane 67.06 s). It is the only executable check of this round's premise — that
+`supported_voices` survives the api mapper → Fastify response serializer → nextjs contracts → picker
+as a **composed chain** — because every unit test on that path is fixture-fed and proves nothing about
+what the provider publishes or about the three `z.object` mirrors composing. It asserted the narration
+select is narrowed to `resolveGenerationTarget("narration")`, that the live catalogue's `voices` for
+that model is non-null and non-empty, and that every option the voice select offers is one the
+provider named. Sequencing mattered: it was run against the api container built from the **bumped**
+gitlink (image id verified against the running container), because only that api serves `voices`.
+
+**A finding about the fixture knob, recorded because the cheap path does not exist.**
+`SUPAGLOO_E2E_STUDIO_SLUG` is meant to let a spec reuse an already-populated project instead of
+creating a GitHub fixture repo and paying for a storyboard generation — `studio-hydration.e2e.ts`
+describes it as "the release harness seeds/imports a populated-manifest project and exposes its slug".
+**No such harness exists, and the knob cannot work as written.** Every project read in the api is
+owner-scoped (`projects-service.ts` — `where: { id, ownerId: userId }`), and each spec seeds its user
+as `yv-e2e-returning-<RUN_ID>` with a fresh random `RUN_ID` minted at module load, so a fixture
+project from any earlier run belongs to a different user. Measured here: pointing the knob at a real
+5-scene fixture project failed with *"[data-testid=\"script-input\"] never appeared within 60000ms"* —
+the owner-scoped 404, not a missing project. E-MC6 was therefore run on the spec's own
+`createProjectViaExistingEmptyRepo` path, which added **one** fixture repo (28 → 29) and one real
+storyboard generation. Either the knob needs a seeding step that re-owns a fixture project to the
+run's user, or the specs need a way to pin the seed nonce; until one of those exists the knob is
+inert and should not be quoted as a cost saving.
+
+Root's unit lane was **321/322 before** this marker was written, red on exactly
+`committed-config-gate` RX-9 with the diff naming the three new SHAs against the three old ones — by
+design, and what this edit resolves — and **322/322 after**, with the gitlinks staged so
+`git ls-files -s` arms the guard. `docker ps -a` matched **zero** containers on `supagloo-bh`,
+`supagloo-dbos-run`, `supagloo-nextjs-run` or `supagloo-api-run` before and after, with only the
+long-lived stack remaining.
