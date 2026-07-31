@@ -37,17 +37,45 @@ error, no partial-page signal, nothing.
    only reason it surfaced is that its sibling `E-YV4` (which probes
    `language_ranges[]=aab` directly, a different index that is NOT stale) went red.
 
-## What was done, and what deliberately was not
+## RESOLVED 2026-07-31 (nextjs `29ea850`) — the header is now pinned
+
+Re-measured before shipping: still 1472 vs 1479, still a strict superset (the
+header-carrying variant adds `ceb ycn aab egm jub sax` and drops nothing), and the
+upstream `Age` header tells the whole story — ~35 800 s on the default variant vs ~1 200 s
+on the other. **User decision: patch it now.**
+
+`lib/youversion/client.ts` sends `accept-encoding: gzip, deflate` on **that one request**,
+via a `getJson` `extraHeaders` argument that has exactly one caller. The measurement, the
+date and the deletion condition live at `CATALOGUE_ACCEPT_ENCODING`.
+
+Two tests hold it, and the second is the interesting one:
+
+- `U-YV1b` — the catalogue request carries the header **and the other six do not**. The
+  scope claim is deliberate: only this index was measured stale, so widening a
+  third-party-cache workaround costs a test edit, not a shrug.
+- `E-YV1b` (real lane) — fetches BOTH variants live and asserts the client's catalogue
+  covers the **union** of their tags, plus an anti-vacuity floor. A bare row-count floor
+  (`>= 1258`) was **rejected**: upstream adding 10 languages to both variants makes
+  1252 → 1262, which clears a 1258 floor with the header deleted. The union form is red
+  for a removal for exactly as long as the divergence exists, and goes quiet — correctly,
+  reporting a delta of 0 — if the variants converge.
+
+**The generalisable bit:** when a workaround exists only because two observable variants of
+the same resource disagree, pin it by comparing the variants, not by writing down a number
+from one of them. The number rots; the comparison does not.
+
+## What was done at DISCOVERY time, and what deliberately was not
 
 `E-YV1` no longer names a tag: it holds the ratio (catalogue ≪ `/v1/languages`) plus a
 subset check on the **primary subtag** — the bibles index carries `sus-Arab`, `ur-Deva`,
 `ur-Latn` and friends that have no `/v1/languages` record at all, which the client's own
 docblock documents and a first draft of the assertion ignored.
 
-**No workaround was shipped.** Pinning an explicit `Accept-Encoding` in the client would
-be cargo-culting a fix for someone else's cache: it is not the documented behaviour of the
-header, it could stop working the moment the variant is evicted, and it would bury the
-finding. Open question for the user, not a silent patch.
+**No workaround was shipped in the discovery pass.** The reasoning was that pinning the
+header would be cargo-culting a fix for someone else's cache, and would bury the finding.
+That was right about the risk and wrong about the remedy: the fix is not "do not patch",
+it is "patch, and make the patch's own premise falsifiable" — which is what `E-YV1b`
+above does. Raised as an open question for the user, who chose to patch.
 
 Related: [[youversion-bible-read-surface-lives-in-nextjs]],
 [[a-test-that-claims-a-class-must-drive-the-class]],

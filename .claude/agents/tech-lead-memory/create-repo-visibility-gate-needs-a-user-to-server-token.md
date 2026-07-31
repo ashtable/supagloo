@@ -1,6 +1,6 @@
 ---
 name: create-repo-visibility-gate-needs-a-user-to-server-token
-description: The api's `awaitInstallationVisibility` walks `GET /user/installations/:id/repositories`, which GitHub serves ONLY to a user-to-server token — so row 66's synthetic exchange (a classic PAT) 403s forever, and the BFF's 30 s backstop was hiding the api's own 60 s error behind a generic 504
+description: FIXED — the api's `awaitInstallationVisibility` used to walk `GET /user/installations/:id/repositories`, which GitHub serves ONLY to a user-to-server token, so row 66's synthetic exchange (a classic PAT) 403d forever; it now walks the installation's own listing. Keeps the rule that a proxy's timeout must exceed the budget it fronts.
 metadata:
   type: constraint
 ---
@@ -41,6 +41,33 @@ test pass": the gate exists to predict dbos's `ensureRepoReachable`, which walks
 `GET /installation/repositories`. Probing the **user's** view to predict the
 **installation's** view is indirect; probing the installation's own view is byte-for-byte
 the read being predicted, and works with a token the api mints for itself.
+
+### DONE 2026-07-31 — api `bb5d8ea`
+
+The gate now reads `GET /installation/repositories` through `githubAppClient`. It is NOT
+the one-line `server.ts` change the old docblock imagined, because that would have left the
+wrong endpoint as what you get by saying nothing:
+
+- `InstallationRepoLister` **loses its `token` argument**, so the user credential cannot
+  reach the gate at all and the seam cannot be quietly repointed at a user-scoped endpoint.
+  `provisionRepo` stops returning the token — its last use is the repo creation.
+- `appClient` is a **required** constructor option. The old default was the fault.
+- `GithubUserAuthClient.listInstallationRepos` is **deleted** (zero callers). A
+  tested-but-unused wrapper around the very endpoint that caused this is an invitation.
+- The api e2e **drops its lister substitution** and runs the real production path;
+  `installationRepoFullNames` survives only as an independent after-the-fact probe, so the
+  check no longer shares an implementation with the thing it checks.
+
+Pinned by `U-RP1` (default lister goes through the App client carrying only the
+installation id) and `U-RP2` (it never passes `deriveEmptinessFor`, which would fan a
+commits probe over every `size === 0` repo — 55 measured — inside a request a browser is
+holding open). Both verified red under mutation. `RepoNotVisibleError`, its 502 +
+`repo_creation_failed` contract, and the 60 s budget are untouched, so `U-PX1` below still
+holds.
+
+**Cost delta, stated so nobody rediscovers it:** each probe is now one token mint + one
+listing GET per page (7 requests for the 582-repo live account) instead of ~6. The common
+case is a single probe, because the gate reads before it ever sleeps.
 
 ## 2. The backstop was shorter than the thing it backstopped
 
