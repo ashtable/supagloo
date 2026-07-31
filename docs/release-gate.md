@@ -87,7 +87,7 @@ was verified at — and if it names shas, they must equal root's gitlinks **righ
 a submodule pointer without re-running §2 and the gate goes red, which is the entire point.
 
 ```
-COMMITTED-CONFIG VERIFIED AT: a89a09d72417da7eeeaad235679bc237cee559f1 4190c1e1825f2c53064cc78a0b2e5ab30145b110 5986d3f57c52afb9e152291bba92981d83db7b64
+COMMITTED-CONFIG VERIFIED AT: 2e2f884682677884ccc7cd9d30f4a08a262652a3 4190c1e1825f2c53064cc78a0b2e5ab30145b110 4ab96a5e59e5750c6992d76fa3fbb145683d5b3d
 ```
 
 **2026-07-30 — nextjs `2596e64` → `1446b09` (nav source link + a stale gloo e2e wait).**
@@ -334,6 +334,86 @@ inert and should not be quoted as a cost saving.
 
 Root's unit lane was **321/322 before** this marker was written, red on exactly
 `committed-config-gate` RX-9 with the diff naming the three new SHAs against the three old ones — by
+design, and what this edit resolves — and **322/322 after**, with the gitlinks staged so
+`git ls-files -s` arms the guard. `docker ps -a` matched **zero** containers on `supagloo-bh`,
+`supagloo-dbos-run`, `supagloo-nextjs-run` or `supagloo-api-run` before and after, with only the
+long-lived stack remaining.
+
+---
+
+**Verified 2026-07-31 (Step 13) at nextjs `2e2f884` / api `4190c1e` / dbos `4ab96a5` — the round
+that finished a release a red e2e lane had correctly halted, and the run this marker now names.**
+Two gitlinks moved (nextjs `a89a09d`→`2e2f884`, dbos `5986d3f`→`4ab96a5`); **api was unchanged at
+`4190c1e`** and was not re-released, and `supagloo-database-lib` was untouched at `fc5cf2c` — both
+consumers stayed pinned at `ARG DATABASE_LIB_REF=fc5cf2c...`, verified unchanged, so no
+`dockerfile-database-lib-pin` ordering applied here. `supagloo-nodejs-dbos` had already been released
+to `4ab96a5` by the halted run and was **not** re-released; only root's pointer to it moved. All three
+SHAs were re-read from `git ls-files -s` immediately before this record was written.
+
+**Why the release had been halted, and why it is now finishable.** `E-SH2` ("an edited scene script
+commits and survives a fresh re-open") failed on its first-ever execution with the exact shape of
+silent data loss. **It was a test defect, not data loss** — the edit was in git the whole time. The
+studio has two deliberate entry points that disagree about the opening scene (`STORYBOARD_GENERATED`
+selects `scenes[0]`, `initialStudioState` selects `scenes[1]`), and `SceneInspector` never exposed
+which scene it was rendering, so the spec read scene 2's script after editing scene 1. nextjs
+`2e2f884` adds `data-scene-id` bound to the scene RENDERED and makes the spec assert the **subject**
+before the content.
+
+**The run.** No `docker-compose.override.yml` existed and `docker compose config` reported all four
+contexts under `/Users/ash/code/supagloo/supagloo-*` (the submodules). All three submodule checkouts
+were clean and byte-equal to the staged gitlinks. Root's `.env` carried a non-empty
+`YOUVERSION_APP_KEY`. `docker compose down` first, then `docker compose build --no-cache migrate api
+dbos nextjs` rebuilt every image in **189 s** (exit 0, all four re-tagged), `docker compose up -d`
+brought the stack up in **8 s** with `migrate` exiting **0** and reporting *"No pending migrations to
+apply."*, and the worker logged `DBOS launched!` with its four queues (`git-ops` 4, `ai-generation` 8,
+`render` 1, `maintenance` 1) — the live confirmation that the app key is present, since dbos `2db0081`
+a blank one takes the worker DOWN rather than degrading it.
+
+Root's full e2e then ran green: **5 files / 20 tests**, lane wall time **6.91 s**, with all **nine**
+boot-hardening cases individually confirmed to execute under `--reporter=verbose` — E-BH1 837 ms,
+E-BH2 508 ms, E-BH3 527 ms, E-BH4 587 ms, **E-BH9 508 ms**, E-BH5 737 ms, E-BH6 645 ms,
+**E-BH8 1159 ms**, E-BH7 81 ms. Not skipped.
+
+**Both gitlink-sensitive cases were READ, not counted**, per §2 step 5 — each re-run by hand against
+the same cold-built images, whose ids were checked to match the running containers
+(`supagloo-nextjs` `sha256:e0e88ca4…`, `supagloo-dbos` `sha256:e585ec3e…`, both identical to
+`docker inspect`'s `.Image` on the live containers):
+
+- **E-BH9 (dbos).** A pass/fail summary is not diagnostic for it: on a stale image the worker never
+  exits, the harness kills it, and `status: -1` satisfies a naive non-zero check. The probe printed
+  `timedOut: false`, `status: 1`, no Node `ETIMEDOUT`, elapsed **527 ms**, refusing with *"Invalid
+  environment configuration in supagloo-nodejs-dbos/src/config/env.ts — YOUVERSION_APP_KEY: Invalid
+  input: expected string, received undefined"* — the **required-ness** path (`received undefined`; the
+  `min(1)`-on-empty-string path was checked for and absent), i.e. the discriminating one. The derived
+  command was `["node","dist/main.js"]` with no `ENTRYPOINT`, read from the submodule's Dockerfile.
+- **E-BH8 (nextjs).** `GET /` answered **200 in 656 ms**; in **143 378 bytes** of body the container's
+  runtime `YV_APP_KEY` appeared **exactly once**, `build-time-placeholder-not-a-real-key` **zero**
+  times and the shorter `placeholder-not-a-real-key` **zero** times, with no `boot refused` in the
+  container's logs. The nextjs gitlink moved this round, so this case was load-bearing rather than
+  ceremonial.
+
+**`E-SH2` executed and PASSED for the first time in its existence — 68 972 ms.** That is the point of
+this release. It was run against the freshly built images above, in
+`supagloo-nextjs`'s real lane at the merged commit `2e2f884`. The **68 972 ms** matters as much as the
+green: a spec that returns silently reads as a pass in the summary line at ~0 ms, which is exactly how
+E-SH2 accumulated three recorded 21/21 runs without ever running, so the duration is the evidence that
+it really drove the browser. Alongside it, `E-SH1` passed at 27 194 ms and
+`E-WSC1..4` (`studio-wizard-scripture-carry`, the other spec the fix touched) at 90 010 ms —
+**2 files / 3 tests, lane wall 221 s**.
+
+**Only those two specs were re-run, deliberately.** The previous full real lane took GitHub fixture
+repos from 29 to 40 and spent real provider credit; for a two-spec change that is disproportionate.
+This run added **3** fixture repos (40 → 43) — one per acquisition path (`hydrate`, `hydrate-edit`,
+`scripture-carry`) — against roughly 11 for a full lane.
+
+**Four reds are still outstanding and are NOT regressions of this round**, carried over from the
+previous run and unrelated to any work in it: `E-MC3` (the BFF falls back to gloo, so faith alignment
+is visible on arrival), `E-MC4` (the selected OpenRouter image model publishes no price), `E-RNP1b`
+(GitHub App `list-installation-repos` 403) and `E-YV4` (a fixture language that had zero bibles now
+has one — provider drift). None were re-run here and none block this release.
+
+Root's unit lane was **321/322 before** this marker was written, red on exactly
+`committed-config-gate` RX-9 with the diff naming the two new SHAs against the two old ones — by
 design, and what this edit resolves — and **322/322 after**, with the gitlinks staged so
 `git ls-files -s` arms the guard. `docker ps -a` matched **zero** containers on `supagloo-bh`,
 `supagloo-dbos-run`, `supagloo-nextjs-run` or `supagloo-api-run` before and after, with only the
