@@ -36,6 +36,14 @@ marked `DELETE AT THE db-lib BUMP`. Treat anything not a non-empty string as abs
 than forwarding it: an unknown provider voice is a hard 400, and degrading to the default
 beats failing the generation.
 
+**When you come back to honour that marker, read
+[[passthrough-exempts-only-undeclared-keys]] first.** The cast and its runtime guard do NOT
+have the same fate: `.passthrough()` exempts only UNDECLARED keys, so once db-lib declares
+the field Zod validates it and the guard is provably dead — but a marker whose field the
+bump did NOT declare (measured: `narratorVoice` on `GenerateScriptInputSchema`) keeps a
+guard that is the only shape check there is, and its "DELETE AT THE BUMP" promise is false
+and must be rewritten. Measure each marker with `tsc --noEmit`; do not sweep them as a batch.
+
 **The manifest half still walks all five mirrors** ([[the-manifest-has-five-mirrors-not-four]]).
 Only the WIRE half escapes. Say which half you mean.
 
