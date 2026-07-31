@@ -75,6 +75,27 @@ seed. It passes for a reason that is an artefact of the seed. Production is unaf
 (`parseSeedRequest` is flag-gated), and the new `optional-connections.e2e.ts` deliberately
 uses `authed-fresh`.
 
+## What the review (Steps 7–11) then corrected
+
+Four defects were implemented on top of the shas above; each has its own memory:
+
+- **R1** — the api e2e was RED at runtime (7/17 failing, all `expected 500 to be 201`)
+  because it constructed `AiGenerationsService` without the now-required `connections`.
+  → [[api-e2e-seeds-connections-per-spec]]
+- **R2** — `repairProvider` returned an out-of-matrix env override unclamped, yielding
+  `model: undefined` and blanking the WHOLE Studio AI surface. → [[matrix-order-is-compatibility-not-preference]]
+- **R3** — the launcher guardrail fired at a first-sign-in user and redirected them to a
+  page that bounces them back; the gate had to cover the whole launcher family, not just
+  the modal. → [[a-permissive-default-opens-a-second-doorway]]
+- **R6** — the backdrop dismissal route had no test (`U-OW8`/`U-OW9`).
+
+**R4 was DELIBERATELY NOT APPLIED** and must stay unapplied. Its suggested
+`onClose={() => setWizard("none")}` unmounts `ConnectionsRequiredModal`, whose effect
+cleanup `clearTimeout`s the redirect — silently deleting requirement R3's *"auto-redirected
+there anyway"* while `U-CR4` (which drives the child in isolation with a constant `open`)
+stays green. If it is ever revisited, `onClose` must notify WITHOUT unmounting, via a
+separate `guardrailDismissed` flag, and be judged by a composition-level test.
+
 Related: [[a-failed-read-is-not-an-answer-about-the-user-s-data]] (the picker/action split on
 `null`), [[session-resolved-vs-signed-out]], [[modal-panel-is-viewport-bounded]],
 [[one-rule-one-module-many-boundaries]], [[voice-catalogue-must-be-provider-sourced]] (R9's
