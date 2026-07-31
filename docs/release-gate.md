@@ -87,8 +87,17 @@ was verified at — and if it names shas, they must equal root's gitlinks **righ
 a submodule pointer without re-running §2 and the gate goes red, which is the entire point.
 
 ```
-COMMITTED-CONFIG VERIFIED AT: 2596e64fc8fb1c9f95b2386c52384af02bcc2717 51283fd2847e7d8c07ce1748863fd1158d748245 2db00816f9688d8074d4bc94ca2bec3a73d8fa28
+COMMITTED-CONFIG VERIFIED AT: 1446b099c29a27e80a6eb47277a49c49e7307157 51283fd2847e7d8c07ce1748863fd1158d748245 2db00816f9688d8074d4bc94ca2bec3a73d8fa28
 ```
+
+**2026-07-30 — nextjs `2596e64` → `1446b09` (nav source link + a stale gloo e2e wait).**
+Ran §2 in full: no override present, `docker compose build --no-cache migrate api dbos
+nextjs` from the submodules, `up -d` with `migrate` reporting "No pending migrations to
+apply.", then `npm run test:e2e --reporter=verbose` — **5 files / 20 tests green**, lane
+wall 7.34 s. All **nine** boot-hardening cases confirmed executed by name, not counted:
+E-BH1 780 ms · E-BH2 618 ms · E-BH3 622 ms · E-BH4 590 ms · **E-BH9 717 ms** · E-BH5 784 ms
+· E-BH6 670 ms · **E-BH8 1112 ms** · E-BH7 78 ms. The nextjs gitlink moved and E-BH8 is the
+gitlink-sensitive case, so the cold rebuild was load-bearing rather than ceremonial.
 
 To record a verified run, replace `not-yet` with the three shas, space-separated, e.g.
 `COMMITTED-CONFIG VERIFIED AT: <nextjs-sha> <api-sha> <dbos-sha>`, taken from
